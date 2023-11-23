@@ -18,19 +18,19 @@ function getCommitMessage {
 
 	# The changes made in the code, algorithm and/or configuration
 	echo "Enter a summary of changes: "
-	changes=$(cat)
+	changes=$(cat | sed 's/^/\t\t/')
 
 	# References regarding the issues, documentations and code
 	echo "Enter any relevant references: "
-	references=$(cat)
+	references=$(cat | sed 's/^/\t\t/')
 
 	# Specify why the changes were made
 	echo "Enter the purpose of the changes: "
-	purpose=$(cat)
+	purpose=$(cat | sed 's/^/\t\t/')
 
 	# State the result, side effect and limitations of the changes
 	echo "Enter the effect of the changes: "
-	effect=$(cat)
+	effect=$(cat | sed 's/^/\t\t/')
 
 	# Name/Alias of the contributor
 	read -p "Enter the contributor name: " contributor
@@ -40,7 +40,7 @@ function getCommitMessage {
 
 	# Statement for any work that should/must be done regarding the changes
 	echo "Enter any future work to be done: "
-	future_work=$(cat)
+	future_work=$(cat | sed 's/^/\t\t/')
 
 	# Generate commit message
 	commit_message="$header
