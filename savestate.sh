@@ -48,23 +48,23 @@ function getCommitMessage {
 	Body:
 
 		Summary of changes:
-		$changes
+$changes
 
 		References:
-		$references
+$references
 
 		Purpose:
-		$purpose
+$purpose
 
 		Effect:
-		$effect
+$effect
 
 	Footer:
 
 		Contributor: $contributor
 		Flag: $flag
 		Future work:
-		$future_work"
+$future_work"
 }
 
 # Check if the directory path is provided
