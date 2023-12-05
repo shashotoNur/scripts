@@ -12,22 +12,24 @@ else
 fi
 
 # Convert megabytes to bytes
-target_size=$((target_size_mb * 1024 * 1024))
+target_size=$((target_size_mb * 1024))
 mkdir -p "$target_directory"
 
-current_size=0
-sub_dir_index=0
+# Create all subdirectories in advance
+num_subdirs=$(( ($(du -s "$source_directory" | cut -f1) + target_size - 1) / target_size ))
+for ((i = 0; i < num_subdirs; i++)); do
+    mkdir -p "${target_directory}/subdir_${i}"
+done
 
-find "$source_directory" -type f | while read -r file; do
-    size=$(du -b "$file" | cut -f1)
-    if [ "$((current_size + size))" -gt "$target_size" ]; then
-        ((sub_dir_index++))
-        current_size=0
-    fi
-    current_size=$((current_size + size))
+# Create an array of filenames sorted by size
+readarray -t sorted_files < <(find "$source_directory" -type f -printf "%s %p\n" | sort -n | cut -d' ' -f2-)
+
+# Copy files in a round-robin manner to subdirectories
+sub_dir_index=0
+for file in "${sorted_files[@]}"; do
     sub_dir="${target_directory}/subdir_${sub_dir_index}"
-    mkdir -p "$sub_dir"
     cp "$file" "$sub_dir"
+    ((sub_dir_index = (sub_dir_index + 1) % num_subdirs))
 done
 
 # Display a message indicating completion
