@@ -3,13 +3,18 @@
 # Declare the number of processes to display initially
 processes_to_show=5
 
+# Function to display top processes
+display_top_processes() {
+  local sort_option=$1
+  echo "Top processes by $sort_option usage:"
+  ps aux --sort=-%$sort_option | awk '{print $1, $2, $3, $4, $11}' | column -t | head -n $((processes_to_show + 1))
+}
+
 # Display the top processes by memory usage
-echo "Top processes by memory usage:"
-ps aux --sort=-%mem | awk '{print $1, $2, $3, $4, $11}' | column -t | head -n $((processes_to_show + 1))
+display_top_processes mem
 
 # Display the top processes by CPU usage
-echo -e "\nTop processes by CPU usage:"
-ps aux --sort=-%cpu | awk '{print $1, $2, $3, $4, $11}' | column -t | head -n $((processes_to_show + 1))
+display_top_processes cpu
 
 # Ask the user for the process name to search
 echo
@@ -23,38 +28,44 @@ if [ -z "$PIDS" ]; then
 else
     # Display the matching processes and their PIDs
     echo -e "\nProcesses matching '$PROCESS_NAME' found:"
-
-    for PID in $PIDS; do
-        PROCESS_NAME=$(ps -o comm= -p "$PID")
-        echo "PID: $PID, Process Name: $PROCESS_NAME"
-    done
+    ps -o pid= -o comm= -p $PIDS
 
     # Ask the user if they want to kill any of the processes
     read -p "Do you want to kill any of these processes? (y/n): " CHOICE
 
     if [ "$CHOICE" == "y" ]; then
         # Ask for the PID to kill
-        read -p "Enter the PID to kill: " KILL_PID
+        read -p "Enter the PID to kill (or '*' to kill all): " KILL_PID
 
-        # Attempt to kill the process gracefully (SIGTERM)
-        kill "$KILL_PID"
+        if [ "$KILL_PID" == "*" ]; then
+            # Kill all the matching processes
+            echo "Killing all processes matching $PROCESS_NAME..."
+            kill $PIDS
+        else
+            # Kill a single process gracefully (SIGTERM)
+            kill "$KILL_PID"
+        fi
 
-        # Wait for the process to terminate with a timeout
-        echo "Waiting for the process to terminate..."
+        # Wait for the process(es) to terminate with a timeout
         TIMEOUT=3
+        echo "Verifying if termination was successful in $TIMEOUT seconds..."
         sleep "$TIMEOUT"
 
-        # Check if the process is still running
-        if ps -p "$KILL_PID" > /dev/null; then
+        PIDS=$(pgrep -f "$PROCESS_NAME")
+        echo "$PIDS"
+        # Check if all processes have been terminated
+        if [ ${#PIDS[@]} != 0 ] && [ "$KILL_PID" == "*" ]; then
+            kill -9 $PIDS
+            echo "Some processes were killed forcefully."
+        elif ps -p "$KILL_PID" > /dev/null; then
             # If the process is still running, forcefully kill it (SIGKILL)
             kill -9 "$KILL_PID"
-            echo "Process with PID $KILL_PID killed forcefully (SIGKILL)."
-
+            echo "Process with PID $KILL_PID was killed forcefully."
         else
-            echo "Process with PID $KILL_PID terminated gracefully."
+            echo "Termination was successful!"
         fi
 
     else
-        echo "Processes not killed."
+        echo "No process was killed."
     fi
 fi
