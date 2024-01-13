@@ -8,9 +8,14 @@ generate_crypto_key() {
 }
 
 encrypt() {
-    read -p "Enter text: " text
-    read -s -p "Enter passkey: " passkey
+    message="Keep this line unchanged, enter your text below, save the file (ctrl+s) & exit this editor (ctrl+x)."
+    echo $message > /tmp/user_input.tmp
 
+    nano /tmp/user_input.tmp
+    text=$(tail -n +2 /tmp/user_input.tmp)
+    rm /tmp/user_input.tmp
+
+    read -s -p "Enter passkey: " passkey
     echo -e ""
     read -p "Enter filename with path: " path_to_file
 
