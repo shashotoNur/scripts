@@ -1,6 +1,6 @@
 #!/bin/bash
 
-clip_file="$HOME/.clip_history"
+clip_file="$HOME/.cliphist"
 last_clip=""
 
 # Ensure the clip history file exists
@@ -19,7 +19,7 @@ echo "Clipboard history is being stored at $clip_file"
 while true
 do
     # Get current clipboard content
-    current_clip=$(xclip -selection clipboard -o)
+    current_clip=$(cliphist list | head -n 1 | cliphist decode)
 
     # Check if clipboard content is not empty and is new
     if [[ -n "$current_clip" && "$current_clip" != "$last_clip" ]]
@@ -31,4 +31,3 @@ do
     # Sleep for 1 second before checking again
     sleep 1
 done
-
