@@ -30,7 +30,7 @@ encrypt() {
     encrypted_text=$(echo "$text" | openssl enc -aes-256-cbc -a -k "$crypto_key" -md sha512 -pbkdf2 -iter 100000 -base64)
 
     echo "$salt~~$encrypted_text" > "$path_to_file"
-    echo "$passkey" | xclip -selection clipboard
+    echo "$passkey" | wl-copy
     echo "Encrypted text saved to $path_to_file & passkey is copied to clipboard!"
 }
 
@@ -50,7 +50,7 @@ decrypt() {
 
 	decrypted_text=$(echo "$encrypted_text" | openssl enc -aes-256-cbc -d -a -k "$crypto_key" -md sha512 -pbkdf2 -iter 100000 -base64)
 
-    echo "$decrypted_text" | xclip -selection clipboard
+    echo "$decrypted_text" | wl-copy
     echo -e "\nDecrypted text copied to clipboard!"
 }
 

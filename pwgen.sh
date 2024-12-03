@@ -27,5 +27,5 @@ rest=$(tr -dc "A-Za-z0-9$SYMBOLS" < /dev/urandom | head -c "$rest_length")
 PASSWORD=$(echo "$upper$lower$symbols$numbers$rest" | fold -w1 | shuf | tr -d '\n')
 
 # Copy password to clipboard (requires xclip or xsel)
-echo -n "$PASSWORD" | xclip -selection clipboard
+echo -n "$PASSWORD" | wl-copy
 echo "Password generated and copied to clipboard!"
