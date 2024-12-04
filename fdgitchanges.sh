@@ -14,7 +14,7 @@ else
 fi
 
 # 3. Specify the directory to scan (change if needed)
-directory_to_scan="$HOME/Documents/"
+directory_to_scan="$HOME/Workspace/"
 
 # Recursively check each subdirectory for Git repos with uncommitted or unpushed changes
 find "$directory_to_scan" -type d -name ".git" -prune -print0 | while IFS= read -r -d '' git_dir; do

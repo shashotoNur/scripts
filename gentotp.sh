@@ -45,6 +45,6 @@ echo "This code is expiring in $expiring_in seconds."
 
 # Optionally, copy the code to the clipboard (requires xclip)
 if [ -x "$(command -v xclip)" ]; then
-  echo -n "$totp_code" | xclip -sel clip
+  echo -n "$totp_code" | wl-copy
   echo "Code copied to clipboard!"
 fi
