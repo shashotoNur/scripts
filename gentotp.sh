@@ -2,21 +2,21 @@
 
 # If the secret key is provided as an argument, take input
 if [ -z "$1" ]; then
-  echo -e ">> USAGE: $0 <your_secret_key>"
+    echo -e ">> USAGE: $0 <your_secret_key>"
 
-  # Ask for input until secret key is provided
-  until [ -n "$secret_key" ]; do
-    read -p "Enter your totp secret: " secret_key
+    # Ask for input until secret key is provided
+    until [ -n "$secret_key" ]; do
+        read -p "Enter your totp secret: " secret_key
 
-    if [ -z "$secret_key" ]; then
-      echo "[ERROR] Secret key cannot be empty!"
-    fi
+        if [ -z "$secret_key" ]; then
+            echo "[ERROR] Secret key cannot be empty!"
+        fi
 
-  done
+    done
 
 else
-  # Take secret key from system argument
-  secret_key=$1
+    # Take secret key from system argument
+    secret_key=$1
 fi
 
 # Get the current Unix timestamp
@@ -34,8 +34,8 @@ output=$(oathtool -b --totp "$secret_key" -c "$counter" 2>&1)
 
 # Echo error and exit if exit status `?` is not equal to 0
 if [ $? -ne 0 ]; then
-  echo -e "[ERROR] $output!\nProgram terminated."
-  exit 1
+    echo -e "[ERROR] $output!\nProgram terminated."
+    exit 1
 fi
 
 # Display the generated TOTP code
@@ -43,8 +43,8 @@ totp_code="$output"
 echo "Your TOTP code: $totp_code"
 echo "This code is expiring in $expiring_in seconds."
 
-# Optionally, copy the code to the clipboard (requires xclip)
-if [ -x "$(command -v xclip)" ]; then
-  echo -n "$totp_code" | wl-copy
-  echo "Code copied to clipboard!"
+# Copy the code to the clipboard (requires wl-copy)
+if [ -x "$(command -v wl-copy)" ]; then
+    echo -n "$totp_code" | wl-copy
+    echo "Code copied to clipboard!"
 fi
