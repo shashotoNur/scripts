@@ -2,27 +2,29 @@
 
 # Get the variables from user input if they aren't provided as arguments
 if [ -z "$1" ] || [ -z "$2" ]; then
-    echo -e "Usage: $0 /path/to/source <target_size>\n"
+    echo -e "Usage: $0 /path/to/source <desired_number>\n"
 
     read -p "Enter the path to the source directory: " source_directory
-    read -p "Enter the target subdirectory size in megabytes: " target_size_mb
+    read -p "Enter the number of files are to be in a directory: " desired_number
 else
     source_directory="$1"
-    target_size_mb="$2"
+    desired_number="$2"
 fi
 
-# Convert megabytes to kilobytes
-target_size=$((target_size_mb * 1024))
-
-# Get the size of the source directory in kilobytes
-source_size=$(du -s "$source_directory" | cut -f1)
+number_of_files=$(ls -1 "$source_directory" | wc -l)
 
 # Calculate the number of required subdirectories
-num_subdirs=$((source_size / target_size))
+num_subdirs=$(( (number_of_files + desired_number - 1) / desired_number ))
 
 # Create the required subdirectories
 for ((i = 0; i < num_subdirs; i++)); do
-    mkdir -p "${source_directory}/${i}"
+    target_path="${source_directory}/${i}"
+
+    if [ -f "${target_path}" ]; then
+        mv "${target_path}" "${target_path}.bak"
+    fi
+
+    mkdir -p "${target_path}"
 done
 
 # Create an array of filenames sorted by size
@@ -35,8 +37,17 @@ readarray -t sorted_files < <(
 # Move files in a round-robin manner to subdirectories
 sub_dir_index=0
 for file in "${sorted_files[@]}"; do
+    filename=$(basename "$file")
+    # Skip dotfiles and files without extensions
+    if [[ "$filename" != *.* || "$filename" == .* ]]; then
+        echo "Skipping '$file'"
+        continue
+    fi
+
     sub_dir="${source_directory}/${sub_dir_index}"
-    mv "$file" "$sub_dir"
+    if [[ -d "$sub_dir" ]]; then
+        mv "$file" "$sub_dir"
+    fi
 
     ((sub_dir_index = (sub_dir_index + 1) % num_subdirs))
 done
