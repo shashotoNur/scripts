@@ -9,40 +9,48 @@ display_top_processes() {
     ps aux --sort=-%$SORT_OPTION | awk '{print $1, $2, $3, $4, $11}' | column -t | head -n $((SHOW + 1))
 }
 
-# Function to wait for the process(es) to terminate with a timeout
+# Function to wait for process(es) to terminate
 wait_for_termination() {
+    local PIDS="$1"
     local TIMEOUT=2
-    echo "Verifying if termination was successful in $TIMEOUT seconds..."
+    echo "Verifying termination in $TIMEOUT seconds..."
     sleep "$TIMEOUT"
+
+    for PID in $PIDS; do
+        if ps -p "$PID" > /dev/null; then
+            echo "Process $PID is still running."
+        fi
+    done
 }
 
-# Function to kill multiple proccesses
-kill_proccesses() {
-    local PIDS=$1
-    local PROCESS_NAME=$2
+# Function to kill multiple processes
+kill_processes() {
+    local PIDS="$1"
+    local PROCESS_NAME="$2"
 
-    echo "Killing all processes matching the specified name..."
+    echo "Attempting to kill all processes matching the name..."
     kill $PIDS
 
-    wait_for_termination
+    wait_for_termination "$PIDS"
+
     PIDS=$(pgrep -f "$PROCESS_NAME")
 
     if [ -z "$PIDS" ]; then
-        echo "All processes found with the name '$PROCESS_NAME' were terminated gracefully."
+        echo "All processes named '$PROCESS_NAME' were terminated gracefully."
     else
         kill -9 $PIDS
-        echo "Some processes were killed forcefully."
+        echo "Some processes required forceful termination."
     fi
 }
 
-# Function to kill a process
+# Function to kill a single process
 kill_process() {
     local PID=$1
 
-    echo "Killing the process with PID '$PID'"
+    echo "Attempting to kill process with PID '$PID'"
     kill "$PID"
 
-    wait_for_termination
+    wait_for_termination "$PID"
 
     if ps -p "$PID" > /dev/null; then
         kill -9 "$PID"
@@ -52,44 +60,41 @@ kill_process() {
     fi
 }
 
-# Main function to find process(es) and kill them
+# Main function to find and kill process(es)
 main() {
-    echo
-    read -p "Enter a process name to see if it is active: " PROCESS_NAME
+    # Show top resource-consuming processes
+    TO_SHOW=5
+    display_top_processes mem "$TO_SHOW"
+    display_top_processes cpu "$TO_SHOW"
 
-    # Search for the processes and get their PIDs
+    echo
+    read -p "Enter a process name to check: " PROCESS_NAME
+
     PIDS=$(pgrep -f "$PROCESS_NAME")
 
     if [ -z "$PIDS" ]; then
-        echo "No processes found with the specified name."
+        echo "No matching processes found."
         return
     fi
 
-    echo -e "\nProcesses matching '$PROCESS_NAME' found:"
-    ps -o pid= -o comm= -p $PIDS
+    echo -e "\nProcesses matching '$PROCESS_NAME':"
+    ps -o pid=,comm= -p $PIDS
 
-    read -p "Do you want to kill any of these processes? (y/n): " CHOICE
+    read -p "Do you want to kill any of these processes? (y/N): " CHOICE
 
     if [ "$CHOICE" != "y" ]; then
-        echo "No process was killed."
+        echo "No processes were killed."
         return
     fi
 
-    read -p "Enter the PID to kill (or '*' to kill all): " KILL_PID
+    read -p "Enter PID to kill (or '*' to kill all): " KILL_PID
 
     if [ "$KILL_PID" == "*" ]; then
-        kill_proccesses "$PIDS" "$PROCESS_NAME"
+        kill_processes "$PIDS" "$PROCESS_NAME"
     else
         kill_process "$KILL_PID"
     fi
 }
 
-# Declare the number of processes to display initially
-TO_SHOW=5
-
-# Display the top processes by memory and CPU usage
-display_top_processes mem "$TO_SHOW"
-display_top_processes cpu "$TO_SHOW"
-
-# Execute the main function
+# Start the script
 main
