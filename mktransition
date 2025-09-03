@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+import argparse
+import math
+import random
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
+# Minimal colored output helpers
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+
+try:
+    from PIL import Image, ImageDraw, ImageFilter
+except ImportError:
+    print(f"{Colors.RED}[ERROR] Pillow is required. Install with: pip install Pillow{Colors.ENDC}")
+    sys.exit(1)
+
+
+@dataclass(frozen=True)
+class Config:
+    steps: int
+    frame_duration_ms: int
+    pause_duration_ms: int
+    power: float
+    max_size: int
+    loop: int
+    quality: int
+    blur_radius: int = 5  # soften mask edge to avoid banding
+
+
+def load_image(path: Path) -> Image.Image:
+    try:
+        return Image.open(path)
+    except FileNotFoundError:
+        raise RuntimeError(f"File not found: {path}")
+    except Image.UnidentifiedImageError:
+        raise RuntimeError(f"Could not identify image: {path}")
+
+
+def prepare_image(img: Image.Image, max_size: int) -> Image.Image:
+    # Convert to RGBA so alpha masks are reliable across input formats.
+
+    img = img.convert("RGBA")
+    w, h = img.size
+
+    if w <= max_size and h <= max_size:
+        return img
+
+    scale = min(max_size / w, max_size / h)
+    new_size = (int(w * scale), int(h * scale))
+
+    return img.resize(new_size, Image.Resampling.LANCZOS)
+
+
+def align_sizes(a: Image.Image, b: Image.Image) -> Tuple[Image.Image, Image.Image]:
+    # Resize both to the smallest common canvas to avoid distortion.
+
+    w = min(a.width, b.width)
+    h = min(a.height, b.height)
+
+    if a.size != (w, h):
+        a = a.resize((w, h), Image.Resampling.LANCZOS)
+
+    if b.size != (w, h):
+        b = b.resize((w, h), Image.Resampling.LANCZOS)
+
+    return a, b
+
+
+def pause_frames(img: Image.Image, duration_ms: int, frame_ms: int) -> List[Image.Image]:
+    count = max(0, duration_ms // frame_ms)
+    return [img.copy() for _ in range(count)]
+
+
+def compute_max_radius(center: Tuple[int, int], w: int, h: int) -> float:
+    cx, cy = center
+
+    return max(
+        math.hypot(cx, cy),
+        math.hypot(w - cx, cy),
+        math.hypot(cx, h - cy),
+        math.hypot(w - cx, h - cy),
+    )
+
+
+def transition_frames(
+    before: Image.Image,
+    after: Image.Image,
+    steps: int,
+    power: float,
+    blur_radius: int,
+    center: Optional[Tuple[int, int]] = None,
+) -> Iterable[Image.Image]:
+    """
+    Radius curve uses a power term so expansion starts fast and slows:
+      r(t) = R * (1 - (1 - t)^power)
+    The mask is blurred so the reveal edge compresses better and looks smoother.
+    """
+    w, h = before.size
+    center = center or (random.randint(0, w), random.randint(0, h))
+    R = compute_max_radius(center, w, h)
+
+    for i in range(steps + 1):
+        t = i / steps
+        r = R * (1 - (1 - t) ** power)
+
+        mask = Image.new('L', (w, h), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((center[0] - r, center[1] - r, center[0] + r, center[1] + r), fill=255)
+
+        if blur_radius > 0:
+            mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+        frame = before.copy()
+        frame.paste(after, (0, 0), mask)
+        yield frame
+
+
+def save_transition(frames: List[Image.Image], out: Path, cfg: Config) -> None:
+    """
+    Use disposal=1 to clear the previous frame; this prevents visual ghosting
+    when frames contain transparent regions or partial updates.
+    optimize=True allows Pillow to attempt palette optimizations.
+    """
+
+    frames[0].save(
+        out,
+        save_all=True,
+        append_images=frames[1:],
+        duration=cfg.frame_duration_ms,
+        loop=cfg.loop,
+        optimize=True,
+        quality=cfg.quality,
+        disposal=1,
+    )
+
+
+def build_frames(before: Image.Image, after: Image.Image, cfg: Config) -> List[Image.Image]:
+    frames: List[Image.Image] = []
+
+    frames += pause_frames(before, cfg.pause_duration_ms, cfg.frame_duration_ms)
+    frames += list(transition_frames(before, after, cfg.steps, cfg.power, cfg.blur_radius))
+    frames += pause_frames(after, cfg.pause_duration_ms, cfg.frame_duration_ms)
+
+    return frames
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Create a circular transition animated WebP from two images.")
+
+    p.add_argument("--before", required=True, help="Path to the 'before' image.")
+    p.add_argument("--after", required=True, help="Path to the 'after' image.")
+    p.add_argument("--output", required=True, help="Path to save the output animated WebP.")
+
+    p.add_argument("--steps", type=int, default=60, help="Transition frames count (default: 60).")
+    p.add_argument("--frame-duration", type=int, default=50, help="Duration per frame in ms (default: 50).")
+    p.add_argument("--pause-duration", type=int, default=1500, help="Pause duration in ms for before/after frames (default: 1500).")
+    p.add_argument("--power", type=float, default=5.0, help="Curve power controlling acceleration (default: 5).")
+
+    p.add_argument("--max-size", type=int, default=1024, help="Maximum image dimension to resize to (default: 1024).")
+    p.add_argument("--loop", type=int, default=0, help="Loop count (0 means infinite) (default: 0).")
+    p.add_argument("--quality", type=int, default=80, help="animated WebP quality hint (default: 80).")
+    p.add_argument("--seed", type=int, default=None, help="Random seed for deterministic center (optional).")
+
+    return p.parse_args()
+
+
+def main() -> int:
+    try:
+        args = parse_args()
+        if args.seed is not None:
+            random.seed(args.seed)
+
+        cfg = Config(
+            steps=args.steps,
+            frame_duration_ms=args.frame_duration,
+            pause_duration_ms=args.pause_duration,
+            power=args.power,
+            max_size=args.max_size,
+            loop=args.loop,
+            quality=args.quality,
+        )
+
+        before = prepare_image(load_image(Path(args.before)), cfg.max_size)
+        after = prepare_image(load_image(Path(args.after)), cfg.max_size)
+
+        if before.size != after.size:
+            print(f"{Colors.YELLOW}[WARN] Images differ in size. Aligning canvases...{Colors.ENDC}")
+            before, after = align_sizes(before, after)
+            print(f"{Colors.GREEN}[OK] Aligned size: {before.width}x{before.height}.{Colors.ENDC}")
+
+        print("Building frames...")
+        frames = build_frames(before, after, cfg)
+
+        out_path = Path(args.output)
+        print("Saving transition...")
+        save_transition(frames, out_path, cfg)
+
+        print(f"{Colors.GREEN}[SUCCESS] Saved: {out_path}{Colors.ENDC}")
+        return 0
+
+    except RuntimeError as e:
+        print(f"{Colors.RED}[ERROR] {e}{Colors.ENDC}")
+        return 1
+    except argparse.ArgumentError as e:
+        print(f"{Colors.RED}[ERROR] Argument error: {e}{Colors.ENDC}")
+        return 1
+    except Exception as e:
+        print(f"{Colors.RED}[ERROR] Unexpected error: {e}{Colors.ENDC}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
