@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v jq >/dev/null || { echo "install jq"; exit 1; }
+command -v fzf >/dev/null || { echo "install fzf"; exit 1; }
+
+DROPIN_DIR="$HOME/.config/dunst/dunstrc.d"
+mkdir -p "$DROPIN_DIR"
+
+APP_ARG="${1-}"
+DUR_ARG="${2-}"
+
+# Select app
+if [ -n "$APP_ARG" ]; then
+    APP="$APP_ARG"
+else
+    # Get app list from history (unique, sorted by frequency)
+    APPS="$(dunstctl history 2>/dev/null \
+        | jq -r '.. | select(type=="object" and has("appname")) | .appname.data' \
+        | sort | uniq -c | sort -nr | awk '{print $2}')"
+
+    if [ -z "$APPS" ]; then
+        echo "No app names found in dunst history. Send a test notification (notify-send) and try again."
+        exit 1
+    fi
+
+    APP="$(printf '%s\n' "$APPS" | fzf --prompt='Snooze which app? ' -1 -q '')"
+    [ -z "$APP" ] && echo "Canceled." && exit 1
+fi
+
+# Read duration
+if [ -n "$DUR_ARG" ]; then
+    DUR="$DUR_ARG"
+else
+    read -rp "Snooze duration (e.g. 30s, 10m, 1h30m) : " DUR
+    [ -z "$DUR" ] && echo "No duration." && exit 1
+fi
+
+# Parse duration -> seconds (bare number = minutes)
+duration_to_sec(){
+  local s="$1" total=0
+  while [[ $s =~ ([0-9]+)([smhSMH]) ]]; do
+    local n=${BASH_REMATCH[1]} u=${BASH_REMATCH[2],,}
+    case $u in s) ((total+=n));; m) ((total+=n*60));; h) ((total+=n*3600));; esac
+    s=${s#*${BASH_REMATCH[0]}}
+  done
+  if [[ $total -eq 0 && $1 =~ ^[0-9]+$ ]]; then total=$(( $1 * 60 )); fi
+  printf "%d" "$total"
+}
+
+seconds="$(duration_to_sec "$DUR")"
+[ "$seconds" -le 0 ] && { echo "Invalid duration: $DUR"; exit 1; }
+
+# Create a unique drop-in
+ID="$(date +%s%N)"
+SECTION="snooze-${ID}"
+FILE="$DROPIN_DIR/99-${SECTION}.conf"
+
+cat > "$FILE" <<EOF
+[$SECTION]
+    appname = "$APP"
+    format = ""
+    history_ignore = true
+EOF
+
+notify-send "Dunst Snooze" "Snoozing $APP for $DUR"
+dunstctl reload
+
+# Schedule cleanup in the background
+(
+  sleep "$seconds"
+  rm -f "$FILE"
+  dunstctl reload || true
+  notify-send "Dunst Snooze" "$APP notifications re-enabled."
+) & disown
