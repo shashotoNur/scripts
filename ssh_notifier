@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# Usage: Include the following lines in your shell's rc file:
+# source ssh_notifier
+# trap notify_ssh_exit EXIT
+# notify_ssh_login
+
+# ===============================================
+# CORE UTILITY FUNCTION
+# ===============================================
+
+# Sends the desktop notification
+# $1: Title, $2: Message, $3: Icon (network-transmit-receive or network-disconnect)
+send_notification() {
+    local TITLE="$1"
+    local MESSAGE="$2"
+    local ICON="${3:-network-transmit-receive}" # Default icon is login
+
+    # Check if this is an SSH session before attempting to notify
+    if [[ -n "$SSH_CONNECTION" ]]; then
+        /usr/bin/notify-send -t 10000 \
+            -a "SSH Session Monitor" \
+            -u normal \
+            -i "$ICON" \
+            "$TITLE" \
+            "$MESSAGE"
+    fi
+}
+
+# ===============================================
+# MODULE 1: LOGIN NOTIFICATION (Call on shell start)
+# ===============================================
+
+notify_ssh_login() {
+    # Exit early if not an SSH session or if 'who' isn't available
+    if [[ -z "$SSH_CONNECTION" ]]; then
+        return 0
+    fi
+
+    local CLIENT_IP SERVER_IP LOGIN_TIME_RAW
+    # SSH_CONNECTION format: <client_ip> <client_port> <server_ip> <server_port>
+    read -r CLIENT_IP _ SERVER_IP _ <<< "$SSH_CONNECTION"
+
+    # Find the current user's login time on the current TTY from the 'who' command.
+    # This replaces the complicated multi-pipe awk structure from the previous script.
+    # who output example: user tty date time (ip)
+
+    # 1. Get the current TTY name (e.g., pts/0)
+    local TTY_NAME=$(tty | sed 's#/dev/##')
+
+    # 2. Extract the login date and time from 'who' for the current session
+    LOGIN_TIME_RAW=$(who | grep "$TTY_NAME" | awk '{print $3, $4}' | head -n 1)
+
+    # 3. Format the date/time (requires adding a seconds field for 'date')
+    local TIMESTAMP_STR="$LOGIN_TIME_RAW:00"
+    local FORMATTED_TIME=$(date -d "$TIMESTAMP_STR" "+%I:%M %P" 2>/dev/null)
+    local FORMATTED_DATE=$(date -d "$TIMESTAMP_STR" "+%d %B, %Y" 2>/dev/null)
+
+    # 4. Construct the message
+    local TITLE="New SSH Connection Detected: $USER"
+    local MESSAGE="User: $USER\n"
+    MESSAGE+="Terminal: $TTY_NAME\n"
+    MESSAGE+="Login Time: $FORMATTED_TIME on $FORMATTED_DATE\n"
+    MESSAGE+="Client IP: $CLIENT_IP"
+
+    # 5. Send the notification
+    send_notification "$TITLE" "$MESSAGE" "network-transmit-receive"
+}
+
+# ===============================================
+# MODULE 2: EXIT NOTIFICATION (Trap on shell exit)
+# ===============================================
+
+notify_ssh_exit() {
+    # Exit early if not an SSH session
+    if [[ -z "$SSH_CONNECTION" ]]; then
+        return 0
+    fi
+
+    local CLIENT_IP SERVER_IP
+    # SSH_CONNECTION format: <client_ip> <client_port> <server_ip> <server_port>
+    read -r CLIENT_IP _ SERVER_IP _ <<< "$SSH_CONNECTION"
+
+    # Calculate session duration using the $SECONDS shell variable
+    local DURATION_SECONDS=$SECONDS
+    local DURATION_HUMAN=$(printf '%dh:%dm:%ds' \
+        $((DURATION_SECONDS/3600)) \
+        $((DURATION_SECONDS%3600/60)) \
+        $((DURATION_SECONDS%60)))
+
+    # Construct the message
+    local TITLE="SSH Session Ended: $USER"
+    local MESSAGE="User: $USER\n"
+    MESSAGE+="Duration: $DURATION_HUMAN\n"
+    MESSAGE+="Client IP: $CLIENT_IP\n"
+    MESSAGE+="Exit Status: $?" # $? holds the exit status of the last command (or the shell's exit status)
+
+    # Send the notification
+    send_notification "$TITLE" "$MESSAGE" "network-disconnect"
+}
