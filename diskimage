@@ -1,0 +1,183 @@
+#!/bin/bash
+
+MODE="$1"
+ARG1="$2"
+ARG2="$3"
+ARG3="$4"
+
+HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+BLOCK_SIZE="4M"
+
+# --- Helper Functions ---
+
+# Lists only whole disks (like sda, nvme0n1): /dev/sdX (SIZE_IN_GB) - MODEL
+get_devices() {
+    lsblk -ndo NAME,SIZE,MODEL | awk '$1 !~ /[0-9]|loop|ram/ {print "/dev/"$1" ("$2") - "$3}'
+}
+
+# /dev/sdX (SIZE_IN_GB) - MODEL -> /dev/sdX
+get_raw_device() {
+    echo "$1" | awk '{print $1}'
+}
+
+unmount_partitions() {
+    local device_path="$1"
+    echo "Checking for mounted partitions on $device_path..."
+
+    PARTITIONS=$(lsblk -rno NAME,MOUNTPOINT | grep "$(basename "$device_path")" | grep -v "$device_path" | awk '$2 != "" {print "/dev/"$1}')
+
+    if [ -z "$PARTITIONS" ]; then
+        echo "No mounted partitions found."
+        return 0
+    fi
+
+    local unmounted_count=0
+    for part in $PARTITIONS; do
+        if umount -f "$part" 2>/dev/null; then
+            echo "Successfully unmounted $part"
+            unmounted_count=$((unmounted_count + 1))
+        else
+            echo "Warning: Could not unmount $part. Please ensure this partition is not in use."
+            return 1
+        fi
+    done
+    return 0
+}
+
+# --- Core Operations ---
+
+backup_disk() {
+    echo "--- DISK BACKUP (dd to .img file) ---"
+
+    if [ -n "$ARG1" ]; then
+        SOURCE_DEVICE="$ARG1"
+        echo "Source Disk (arg): $SOURCE_DEVICE"
+    else
+        SOURCE_DISK_FULL=$(get_devices | fzf --prompt="SELECT DISK TO BACKUP (Source /dev/...): ")
+        [ -z "$SOURCE_DISK_FULL" ] && echo "No source disk selected. Exiting." && return 1
+        SOURCE_DEVICE=$(get_raw_device "$SOURCE_DISK_FULL")
+    fi
+
+    if ! unmount_partitions "$SOURCE_DEVICE"; then
+        echo "Error: Failed to unmount all necessary partitions. Backup aborted."
+        return 1
+    fi
+
+    if [ -n "$ARG2" ]; then
+        SAVE_DIR="$ARG2"
+    else
+        SAVE_DIR=$(find $HOME -type d | fzf --prompt="Select the directory to save the image to: ")
+    fi
+
+    [ -z "$SAVE_DIR" ] && echo "No directory selected. Exiting." && return 1
+    [ ! -d "$SAVE_DIR" ] && mkdir -p "$SAVE_DIR" 2>/dev/null || true
+
+    if [ -n "$ARG3" ]; then
+        IMAGE_NAME="$ARG3"
+    else
+        read -rp "Enter filename for the image (documents.img): " IMAGE_NAME
+    fi
+    [[ "$IMAGE_NAME" != *.img ]] && IMAGE_NAME+=".img"
+    DEST_FILE="$SAVE_DIR/$IMAGE_NAME"
+
+    echo -e "\n--- SUMMARY ---"
+    echo "SOURCE DISK: $SOURCE_DEVICE"
+    echo "DEST. FILE:  $DEST_FILE"
+
+    if [ -z "$ARG1" ]; then
+        read -rp "!!! PROCEED WITH BACKUP? (y/N) " CONFIRM
+        [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Backup cancelled." && return 1
+    fi
+
+    dd if="$SOURCE_DEVICE" of="$DEST_FILE" bs="$BLOCK_SIZE" status=progress conv=sync,noerror
+    [ $? -eq 0 ] && echo "Backup complete to $DEST_FILE"
+}
+
+
+restore_disk() {
+    echo "--- DISK RESTORE (.img file to disk) ---"
+
+    if [ -n "$ARG1" ]; then
+        SOURCE_FILE="$ARG1"
+    else
+        SOURCE_FILE=$(find $HOME -type f -name '*.img' | fzf --prompt="SELECT DISK IMAGE TO RESTORE: ")
+    fi
+
+    [ -z "$SOURCE_FILE" ] && echo "No disk image selected." && return 1
+
+    if [ -n "$ARG2" ]; then
+        DEST_DEVICE="$ARG2"
+    else
+        DEST_DISK_FULL=$(get_devices | fzf --prompt="SELECT DISK TO OVERWRITE: ")
+        [ -z "$DEST_DISK_FULL" ] && echo "No destination disk selected." && return 1
+        DEST_DEVICE=$(get_raw_device "$DEST_DISK_FULL")
+    fi
+
+    if ! unmount_partitions "$DEST_DEVICE"; then
+        echo "Error: Could not unmount partitions."
+        return 1
+    fi
+
+    echo -e "\n--- SUMMARY ---"
+    echo "SOURCE FILE: $SOURCE_FILE"
+    echo "DEST. DISK:  $DEST_DEVICE"
+
+    if [ -z "$ARG1" ]; then
+        read -rp "!!! PROCEED WITH RESTORE? (y/N) " CONFIRM
+        [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Restore cancelled." && return 1
+    fi
+
+    dd if="$SOURCE_FILE" of="$DEST_DEVICE" bs="$BLOCK_SIZE" status=progress conv=sync,noerror
+    [ $? -eq 0 ] && echo "Restore complete to $DEST_DEVICE"
+}
+
+
+# --- Main Script ---
+
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root (e.g., sudo diskimage)"
+    exit 1
+fi
+
+for cmd in fzf dd lsblk awk grep find umount; do
+    command -v "$cmd" &>/dev/null || {
+        echo "Error: Required command '$cmd' not found."; exit 1;
+    }
+done
+
+# Main Menu selection
+echo "--- Disk Image Manager ---"
+
+if [ -n "$MODE" ]; then
+    case "$MODE" in
+        backup)
+            backup_disk
+            exit $?
+            ;;
+        restore)
+            restore_disk
+            exit $?
+            ;;
+        *)
+            echo "Usage:"
+            echo "  $0 backup <source_disk> <save_dir> <image_name>"
+            echo "  $0 restore <image_file> <dest_disk>"
+            exit 1
+            ;;
+    esac
+fi
+
+echo "Select Operation:"
+OPERATION=$(printf "1) Backup Disk to Image\n2) Restore Disk from Image\n3) Exit" | fzf --prompt="Select an operation: ")
+
+case "$OPERATION" in
+    *Backup*)
+        backup_disk
+        ;;
+    *Restore*)
+        restore_disk
+        ;;
+    *)
+        echo "Exiting script."
+        ;;
+esac

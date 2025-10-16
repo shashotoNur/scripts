@@ -1,0 +1,62 @@
+#!/bin/bash
+
+tmuxsesh() {
+  if ! command -v tmux &> /dev/null; then
+    echo "Error: tmux is not installed!"
+    return 1
+  fi
+  if ! command -v fzf &> /dev/null; then
+    echo "Error: fzf is not installed!"
+    return 1
+  fi
+
+  tmux list-sessions &>/dev/null
+  if [[ $? -ne 0 ]]; then
+    echo "No tmux session running!"
+    return 0
+  fi
+
+  local sessions_list
+  sessions_list=$(tmux list-sessions)
+
+  local selected_session
+  selected_session=$(tmux list-sessions | fzf \
+    --height 40% \
+    --reverse \
+    --header="Select a tmux session:")
+
+  if [[ -z "$selected_session" ]]; then
+    return 0
+  fi
+
+  local session_name
+  session_name=$(echo "$selected_session" | awk '{print $1}' | sed 's/://')
+
+  local actions=("Attach" "Detach" "Kill")
+  local selected_action
+  selected_action=$(printf "%s\n" "${actions[@]}" | fzf --height 20% --reverse --header="Select an action for '$session_name':")
+
+  if [[ -z "$selected_action" ]]; then
+    return 0
+  fi
+
+  case "$selected_action" in
+    "Attach")
+      echo "Attaching to session: $session_name"
+      tmux attach-session -t "$session_name"
+      ;;
+    "Detach")
+      echo "Detaching from session: $session_name"
+      tmux detach -s "$session_name"
+      ;;
+    "Kill")
+      echo "Killing session: $session_name"
+      tmux kill-session -t "$session_name"
+      ;;
+    *)
+      echo "Invalid action."
+      ;;
+  esac
+}
+
+tmuxsesh
