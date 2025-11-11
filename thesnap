@@ -1,0 +1,81 @@
+#!/bin/bash
+# file: thesnap
+
+# The Thanos Snap: Deletes half of all files of each type
+# within a given directory and all its subdirectories.
+# Files with no extension are grouped under 'no_ext'.
+
+# --- Configuration & Setup ---
+# Create a unique temporary directory to store lists of files per extension
+TEMP_PREFIX=$(mktemp -d -t thanos_snap_XXXXXX)
+if [ ! -d "$TEMP_PREFIX" ]; then
+    echo "Error: Could not create temporary directory."
+    exit 1
+fi
+# CRITICAL: Ensure the temporary directory is cleaned up when the script exits (even on error)
+trap "rm -rf '$TEMP_PREFIX'" EXIT
+
+# Define the target directory as the first argument or current directory
+TARGET_DIR="${1:-.}"
+
+# --- Validation ---
+if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+    echo "Usage: $0 <target_directory>"
+    echo "Error: The specified directory does not exist or was not provided."
+    exit 1
+fi
+
+echo "--- The Hardest Choices Require The Strongest Wills. ---"
+echo ""
+
+# --- Phase 1: Grouping Files by Extension ---
+
+find "$TARGET_DIR" -type f | while IFS= read -r file_path; do
+    # Skip files inside the temporary directory we created
+    if [[ "$file_path" == "$TEMP_PREFIX"* ]]; then
+        continue
+    fi
+
+    # Extract the file extension
+    filename=$(basename "$file_path")
+    extension="${filename##*.}"
+    if [[ "$filename" == "$extension" ]]; then
+        extension="no_ext"
+    fi
+
+    # Append the file path to the extension's list file in the temporary directory
+    echo "$file_path" >> "${TEMP_PREFIX}/snap_list_${extension}"
+done
+
+# --- Phase 2: Execution of the Snap ---
+
+# Iterate over all generated file lists
+for file_list_path in ${TEMP_PREFIX}/snap_list_*; do
+    # Check if a file list exists (in case no files were found at all)
+    [ -f "$file_list_path" ] || continue
+
+    # Extract the extension name from the filename
+    ext_name=$(basename "$file_list_path" | sed 's/snap_list_//')
+    TOTAL_COUNT=$(wc -l < "$file_list_path")
+    DELETE_COUNT=$(( TOTAL_COUNT / 2 ))
+
+    if [ "$DELETE_COUNT" -gt 0 ]; then
+        echo "Species: .${ext_name} | Population: $TOTAL_COUNT | Erasing: $DELETE_COUNT."
+
+        # Randomly shuffle the list of file paths and pick the top N files for deletion.
+        DELETION_LIST=$(shuf "$file_list_path" | head -n "$DELETE_COUNT")
+
+        # Perform the deletion
+        while IFS= read -r file_to_delete; do
+            echo "  - Erased: $(basename "$file_to_delete")"
+            rm -f "$file_to_delete"
+        done <<< "$DELETION_LIST"
+
+        echo "Half of all ${ext_name}s have been erased."
+    else
+        echo "Type: .${ext_name} | Total: $TOTAL_COUNT | Too few files (<= 1) to delete. Already balanced."
+    fi
+done
+
+echo ""
+echo "--- Perfectly Balanced, As All Things Should Be. ---"
