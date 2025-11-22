@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# --- NATO Phonetic Alphabet Encoder ---
+# This script encodes words provided as command-line arguments using the
+# NATO phonetic alphabet (plus numbers 0-9).
+
+declare -A DICTIONARY
+DICTIONARY=(
+    ["a"]="Alfa" ["b"]="Bravo" ["c"]="Charlie" ["d"]="Delta"
+    ["e"]="Echo" ["f"]="Foxtrot" ["g"]="Golf" ["h"]="Hotel"
+    ["i"]="India" ["j"]="Juliett" ["k"]="Kilo" ["l"]="Lima"
+    ["m"]="Mike" ["n"]="November" ["o"]="Oscar" ["p"]="Papa"
+    ["q"]="Quebec" ["r"]="Romeo" ["s"]="Sierra" ["t"]="Tango"
+    ["u"]="Uniform" ["v"]="Victor" ["w"]="Whiskey" ["x"]="X-ray"
+    ["y"]="Yankee" ["z"]="Zulu"
+    ["1"]="One" ["2"]="Two" ["3"]="Three" ["4"]="Four"
+    ["5"]="Five" ["6"]="Six" ["7"]="Seven" ["8"]="Eight"
+    ["9"]="Nine" ["0"]="Zero"
+)
+
+encode_word() {
+    local word="$1"
+    local lower_word
+    local phonetic_output=""
+
+    # 1. Convert the input word entirely to lowercase
+    lower_word=$(echo "$word" | tr '[:upper:]' '[:lower:]')
+    for (( i=0; i<${#lower_word}; i++ )); do
+        char="${lower_word:$i:1}"
+        code="${DICTIONARY[$char]}"
+
+        # If the code is not empty (i.e., character found), use it, otherwise use the original character
+        if [[ -n "$code" ]]; then
+            phonetic_output+="$code "
+        else
+            # Append the character itself (e.g., punctuation or space)
+            phonetic_output+="$char "
+        fi
+    done
+
+    echo "${phonetic_output% }"
+}
+
+# Check if arguments were provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <word1> [word2] ..."
+    echo "Example: $0 'hello world' 123"
+    exit 1
+fi
+
+# Iterate over all command-line arguments, processing each as a separate word/phrase
+for arg_word in "$@"; do
+    encode_word "$arg_word"
+done
+
+exit 0

@@ -1,8 +1,142 @@
-#!/bin/sh
+#!/bin/bash
 
-if [ $# -lt 4 ] 
-then
-        echo "Usage: pdfsplit input.pdf first_page last_page output.pdf"
-        exit 1
+# Dependencies: poppler-utils (pdfinfo, pdfseparate, pdfunite), bc
+
+# Check dependencies
+command -v pdfinfo >/dev/null 2>&1 || { echo >&2 "Error: pdfinfo is not installed. Install poppler-utils."; exit 1; }
+command -v pdfseparate >/dev/null 2>&1 || { echo >&2 "Error: pdfseparate is not installed. Install poppler-utils."; exit 1; }
+command -v pdfunite >/dev/null 2>&1 || { echo >&2 "Error: pdfunite is not installed. Install poppler-utils."; exit 1; }
+command -v bc >/dev/null 2>&1 || { echo >&2 "Error: bc is not installed."; exit 1; }
+
+show_usage() {
+    echo "Usage: $0 \"<size>\" <pdf_file>"
+    echo "Example: $0 \"20mb\" input.pdf"
+    echo "Example: $0 \"1gb 300mb\" large_scan.pdf"
+    exit 1
+}
+
+# Function to parse size string to bytes
+parse_size() {
+    local input_string="$1"
+    # Normalize: lowercase, remove spaces, remove 'b' from ends of units (kb->k)
+    # We treat spaces as additions. "1gb 20mb" -> "1g + 20m"
+    
+    local total_bytes=0
+    
+    # Split by space to handle "1gb 200mb" format
+    IFS=' ' read -ra PARTS <<< "$input_string"
+    
+    for part in "${PARTS[@]}"; do
+        # Extract number and unit using regex
+        if [[ "$part" =~ ([0-9.]+)([a-zA-Z]+) ]]; then
+            val="${BASH_REMATCH[1]}"
+            unit="${BASH_REMATCH[2]}"
+            
+            # Normalize unit to lowercase and strip 'b'
+            unit=$(echo "$unit" | tr '[:upper:]' '[:lower:]' | sed 's/b$//')
+            
+            multiplier=1
+            case "$unit" in
+                k) multiplier=1024 ;;
+                m) multiplier=$((1024 * 1024)) ;;
+                g) multiplier=$((1024 * 1024 * 1024)) ;;
+                *) echo "Unknown unit: $unit"; exit 1 ;;
+            esac
+            
+            # Calculate bytes for this part using bc for float support
+            part_bytes=$(echo "$val * $multiplier" | bc | cut -d'.' -f1)
+            total_bytes=$((total_bytes + part_bytes))
+        else
+            echo "Invalid size format: $part"
+            exit 1
+        fi
+    done
+    
+    echo "$total_bytes"
+}
+
+# Input Validation
+if [ "$#" -ne 2 ]; then
+    show_usage
 fi
-gs -dNOPAUSE -dQUIET -dBATCH -sOutputFile="$4" -dFirstPage=$2 -dLastPage=$3 -sDEVICE=pdfwrite "$1"
+
+MAX_SIZE_INPUT="$1"
+INPUT_FILE="$2"
+
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "Error: File '$INPUT_FILE' not found."
+    exit 1
+fi
+
+# Parse Size Limit
+LIMIT_BYTES=$(parse_size "$MAX_SIZE_INPUT")
+echo "Target split size: $MAX_SIZE_INPUT ($LIMIT_BYTES bytes)"
+
+# Prepare Metadata
+BASENAME=$(basename "$INPUT_FILE" .pdf)
+DIRNAME=$(dirname "$INPUT_FILE")
+TEMP_DIR=$(mktemp -d)
+
+# Trap to clean up temp dir on exit
+trap "rm -rf $TEMP_DIR" EXIT
+
+echo "Analyzing PDF structure..."
+TOTAL_PAGES=$(pdfinfo "$INPUT_FILE" | grep "Pages:" | awk '{print $2}')
+
+if [ -z "$TOTAL_PAGES" ]; then
+    echo "Error: Could not read page count."
+    exit 1
+fi
+
+echo "Extracting $TOTAL_PAGES pages to calculate segments (this may take a moment)..."
+pdfseparate "$INPUT_FILE" "$TEMP_DIR/page_%d.pdf"
+
+# The Splitting Logic
+current_part=1
+current_batch_size=0
+declare -a batch_files=()
+
+# Determine padding for page numbers (e.g. page_1 vs page_10) for sorting
+# Standard globbing might fail order (1, 10, 2), so we loop strictly by integer
+for (( i=1; i<=TOTAL_PAGES; i++ )); do
+    page_file="$TEMP_DIR/page_$i.pdf"
+
+    if [ ! -f "$page_file" ]; then
+        echo "Warning: Page $i missing, skipping."
+        continue
+    fi
+
+    page_size=$(stat -c%s "$page_file")
+
+    # Check if adding this page exceeds the limit
+    # Note: PDF overhead usually makes the merged file slightly larger than the sum 
+    # of parts. We add a small buffer check logic if strictly needed, but sum is usually close enough.
+    new_size=$((current_batch_size + page_size))
+    
+    if [ $new_size -gt $LIMIT_BYTES ] && [ ${#batch_files[@]} -gt 0 ]; then
+        # Create the current part
+        OUTPUT_NAME="${DIRNAME}/${BASENAME}_part${current_part}.pdf"
+        echo "Creating $OUTPUT_NAME (Approx $((($current_batch_size / 1024 / 1024) + 1)) MB)..."
+        pdfunite "${batch_files[@]}" "$OUTPUT_NAME"
+        
+        # Reset for next batch
+        current_part=$((current_part + 1))
+        batch_files=()
+        current_batch_size=0
+    fi
+    
+    # Add current page to the batch
+    batch_files+=("$page_file")
+    current_batch_size=$((current_batch_size + page_size))
+
+    echo -ne "Processing page $i / $TOTAL_PAGES\r"
+done
+
+# Process remaining pages (Last segment)
+if [ ${#batch_files[@]} -gt 0 ]; then
+    OUTPUT_NAME="${DIRNAME}/${BASENAME}_part${current_part}.pdf"
+    echo -e "\nCreating final segment $OUTPUT_NAME..."
+    pdfunite "${batch_files[@]}" "$OUTPUT_NAME"
+fi
+
+echo "Done! Split into $current_part parts."
