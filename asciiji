@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Dependency Check
+if ! command -v fzf &> /dev/null; then
+    echo "Error: fzf is not installed."
+    exit 1
+fi
+
+# The ASCII Face Database
+# Format: Art <delimiter> Description
+# We use a single-quoted heredoc ('EOM') to prevent backslash expansion
+read -r -d '' FACES << 'EOM'
+¯\_(ツ)_/¯  ::  Shrug / Whatever / I don't know
+(╯°□°）╯︵ ┻━┻  ::  Table Flip / Rage
+┬─┬ノ( º _ ºノ)  ::  Table Put Back / Calm down
+( ͡° ͜ʖ ͡°)  ::  Lenny Face / Smirk / Suggestive
+ಠ_ಠ  ::  Look of Disapproval / Serious
+(▀̿Ĺ̯▀̿ ̿)  ::  Deal With It / Cool
+(づ｡◕‿‿◕｡)づ  ::  Hug / Ghost / Kirby
+ʕ•ᴥ•ʔ  ::  Bear / Cute
+(ง'̀-'́)ง  ::  Fight me / Square up
+(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧  ::  Magic / Sparkles / Ta-da
+(✖╭╮✖)  ::  Dead / X-Eyes
+(¬‿¬)  ::  Sly / Cheeky
+(._.)  ::  Oh / Disappointed
+(>_<)  ::  Troubled / Pain
+(UwU)  ::  UwU / Cute
+(OwO)  ::  OwO / Wide eyes
+(•_•) ( •_•)>⌐■-■ (⌐■_■)  ::  CSI Miami / Glasses on
+t(>.<t)  ::  Middle Fingers / Screw you
+(nice)  ::  Nice
+( ˘ ³˘)♥  ::  Kiss / Love
+(;;;*_*)  ::  Sweating / Nervous
+¯\(°_o)/¯  ::  Confused / Dunno
+(zzz)  ::  Sleeping
+[± _ ±]  ::  Zombie / Dead inside
+/╲/\╭(•‿•)╮/\╱\  ::  Spider / Monster
+ε=ε=ε=ε=ε=ε=┌(;￣◇￣)┘  ::  Running away / Escape
+(ioi)  ::  Crying / Tears
+EOM
+
+# Use fzf to select a face
+# --delimiter: tells fzf to treat " :: " as a separator for field operations (optional here but good practice)
+selected=$(echo "$FACES" | fzf --height 40% --layout=reverse --border --prompt="ASCII Search > " --header="Select a face to copy")
+
+# Process selection
+if [ -n "$selected" ]; then
+    # We use sed to strip everything from the delimiter onwards to isolate the art.
+    # The ' :: ' string is our delimiter.
+    ascii_art=$(echo "$selected" | sed 's/  :: .*//')
+    
+    # Copy to clipboard without a trailing newline if possible (echo -n)
+    echo -n "$ascii_art" | wl-copy
+    
+    echo "Copied: $ascii_art" >&2
+else
+    echo "No selection made." >&2
+fi

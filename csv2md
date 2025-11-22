@@ -1,0 +1,75 @@
+#!/usr/bin/python
+
+import csv
+import sys
+import os
+
+def csv_to_markdown(csv_file_path):
+
+    # Splits the path to get the name without extension and adds .md
+    base_name = os.path.splitext(csv_file_path)[0]
+    output_file_path = f"{base_name}.md"
+
+    try:
+        with open(csv_file_path, mode='r', encoding='utf-8', newline='') as csv_file:
+            reader = csv.reader(csv_file)
+            rows = list(reader)
+
+        if not rows:
+            print("Error: The CSV file is empty.")
+            return
+
+        # Find the maximum length of the data in each column to pad spaces properly
+        num_columns = len(rows[0])
+        col_widths = [0] * num_columns
+
+        for row in rows:
+            # Handle rows that might be shorter than the header
+            while len(row) < num_columns:
+                row.append("")
+            
+            for i, cell in enumerate(row):
+                # Update max width if current cell is longer
+                if len(cell) > col_widths[i]:
+                    col_widths[i] = len(cell)
+
+        # Generate Markdown Content
+        with open(output_file_path, mode='w', encoding='utf-8') as md_file:
+
+            def format_row(row_data):
+                """Format a single row with correct padding."""
+                formatted_cells = []
+                for i, cell in enumerate(row_data):
+                    # ljust adds spaces to the right to match the column width
+                    formatted_cells.append(cell.ljust(col_widths[i]))
+                return f"| {' | '.join(formatted_cells)} |"
+
+            # Write Header
+            header = rows[0]
+            md_file.write(format_row(header) + "\n")
+
+            # Write Separator
+            # Creates |---|---| structure matching the column widths
+            separator = []
+            for width in col_widths:
+                separator.append("-" * width)
+            md_file.write(f"| {' | '.join(separator)} |\n")
+
+            # Write Data Rows
+            for row in rows[1:]:
+                # Ensure row has enough columns (fill missing with empty strings)
+                while len(row) < num_columns:
+                    row.append("")
+                md_file.write(format_row(row) + "\n")
+
+        print(f"Successfully converted '{csv_file_path}' to '{output_file_path}'")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+if __name__ == "__main__":
+    # Check for command line argument
+    if len(sys.argv) < 2:
+        print("Usage: python csv_to_md.py <path_to_csv_file>")
+    else:
+        csv_to_markdown(sys.argv[1])

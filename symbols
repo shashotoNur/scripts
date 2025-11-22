@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Dependency Check
+if ! command -v fzf &> /dev/null; then
+    echo "Error: fzf is not installed."
+    exit 1
+fi
+
+# The Symbol Database
+# Format: Symbol <Tab/Space> Description
+read -r -d '' SYMBOLS << EOM
+α   Alpha (lowercase)
+Α   Alpha (uppercase)
+β   Beta (lowercase)
+Β   Beta (uppercase)
+γ   Gamma (lowercase)
+Γ   Gamma (uppercase)
+δ   Delta (lowercase)
+Δ   Delta (uppercase / Increment / Difference)
+ε   Epsilon (lowercase)
+Ε   Epsilon (uppercase)
+ζ   Zeta (lowercase)
+Ζ   Zeta (uppercase)
+η   Eta (lowercase)
+Η   Eta (uppercase)
+θ   Theta (lowercase)
+Θ   Theta (uppercase)
+ι   Iota (lowercase)
+Ι   Iota (uppercase)
+κ   Kappa (lowercase)
+Κ   Kappa (uppercase)
+λ   Lambda (lowercase / Wavelength)
+Λ   Lambda (uppercase)
+μ   Mu (lowercase / Micro / Friction coefficient)
+Μ   Mu (uppercase)
+ν   Nu (lowercase / Frequency)
+Ν   Nu (uppercase)
+ξ   Xi (lowercase)
+Ξ   Xi (uppercase)
+ο   Omicron (lowercase)
+Ο   Omicron (uppercase)
+π   Pi (lowercase)
+Π   Pi (uppercase / Product operator)
+ρ   Rho (lowercase / Density)
+Ρ   Rho (uppercase)
+σ   Sigma (lowercase / Standard deviation)
+Σ   Sigma (uppercase / Summation)
+τ   Tau (lowercase / Torque)
+Τ   Tau (uppercase)
+υ   Upsilon (lowercase)
+Υ   Upsilon (uppercase)
+φ   Phi (lowercase)
+Φ   Phi (uppercase / Magnetic flux)
+χ   Chi (lowercase)
+Χ   Chi (uppercase)
+ψ   Psi (lowercase / Wave function)
+Ψ   Psi (uppercase)
+ω   Omega (lowercase / Angular velocity)
+Ω   Omega (uppercase / Ohm / Resistance)
+∂   Partial derivative
+∇   Nabla / Del / Gradient
+∫   Integral
+∬   Double Integral
+∭   Triple Integral
+∮   Contour Integral
+∯   Surface Contour Integral
+∞   Infinity
+√   Square Root
+∛   Cube Root
+∜   Fourth Root
+±   Plus-minus
+∓   Minus-plus
+×   Multiplication (Cross product)
+⋅   Dot product (Multiplication)
+÷   Division
+≈   Approximately equal
+≠   Not equal
+≡   Identical to / Defined as
+≤   Less than or equal to
+≥   Greater than or equal to
+≪   Much less than
+≫   Much greater than
+∝   Proportional to
+∠   Angle
+°   Degree
+⊥   Perpendicular
+∥   Parallel
+∴   Therefore
+∵   Because / Since
+∀   For all (Universal quantifier)
+∃   Exists (Existential quantifier)
+∄   Does not exist
+∈   Element of
+∉   Not an element of
+⊂   Subset of
+⊃   Superset of
+∪   Union
+∩   Intersection
+∅   Empty set
+¬   Not (Logical negation)
+∧   Logical AND
+∨   Logical OR
+⊕   Exclusive OR (XOR) / Direct sum
+→   Right Arrow (Implies)
+←   Left Arrow
+↔   Left-Right Arrow (If and only if)
+⇒   Right Double Arrow (Implies)
+⇔   Double Left-Right Arrow (Equivalent)
+ħ   h-bar (Reduced Planck constant)
+ℓ   ell (Script l for length/liter)
+ℰ   EMF (Electromotive force)
+Å   Angstrom
+℃   Degrees Celsius
+℉   Degrees Fahrenheit
+K   Kelvin
+★   Star operator
+†   Dagger (Hermitian conjugate)
+‡   Double Dagger
+‰   Per mille
+§   Section sign
+¶   Paragraph sign (Pilcrow)
+©   Copyright
+®   Registered trademark
+™   Trademark
+EOM
+
+# Use fzf to select a symbol
+selected=$(echo "$SYMBOLS" | fzf --height 50% --layout=reverse --border --prompt="Symbol Search > " --header="Type to search. ENTER to copy.")
+
+# Process selection
+if [ -n "$selected" ]; then
+    # Extract the first character (the symbol)
+    symbol=$(echo "$selected" | awk '{print $1}')
+
+    # Copy to clipboard
+    echo -n "$symbol" | wl-copy
+
+    # Confirmation message (printed to stderr to avoid piping issues if chained)
+    echo "Copied '$symbol' to clipboard" >&2
+else
+    echo "No selection made." >&2
+fi
