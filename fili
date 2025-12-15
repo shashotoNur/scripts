@@ -1,253 +1,300 @@
 #!/bin/bash
 
 # =================================================================
-#  FiLi [Fine Line]
-#  The fine line between navigation and execution.
+# FiLi [Fine Line] /faɪlaɪ/
+# The fine line between navigation and execution.
 # =================================================================
 
-# --- Configuration ---
-START_TIME=$(date +%s)
-INPUT_FILE="$1"
-KITTY_SOCKET="/tmp/kitty_remote_$START_TIME"
+# --- Global Configuration & Constants ---
 
-# --- Color Definitions (ANSII Escape Sequence) ---
-RED='\033[0;31m'        # C
-GREEN='\033[0;32m'      # O
-YELLOW='\033[0;33m'     # L
-BLUE='\033[0;34m'       # O
-CYAN='\033[0;36m'       # R
-NC='\033[0m'            # No Color
+declare -r START_TIME=$(date +%s)
+declare -r KITTY_SOCKET="/tmp/fili_remote_${START_TIME}.sock"
 
-# --- Utility Functions ---
+declare -a LINES
+declare -i TOTAL_LINES=0
+declare -i CURRENT_LINE=0
+
+declare -i SEL_START=-1
+declare -i SEL_END=-1
+
+# ANSI Color Palette
+
+declare -r RED='\033[0;31m'     # C
+declare -r GREEN='\033[0;32m'   # O
+declare -r YELLOW='\033[0;33m'  # L
+declare -r BLUE='\033[0;34m'    # O
+declare -r CYAN='\033[0;36m'    # R
+declare -r NC='\033[0m'         # No Color
+
+# Environment State
+
+HAS_KITTY=false
+HAS_CLIPBOARD=false
+HAS_FZF=false
+CLIP_CMD=""
+
+# --- Core Functions ---
+
+show_help() {
+    cat <<EOF
+Usage: fili [OPTION]... [FILE]
+
+A terminal-based line navigator and executor designed for supervised automation.
+Dependencies: Kitty (Terminal emulator), wl-copy/xclip (Clipboard), fzf (Filter utility)
+
+Options:
+  -h, --help     Display this help and exit.
+  -v, --version  Output version information and exit.
+
+Keyboard Controls:
+  Up/Down        Navigate single lines.
+  Shift+Up/Down  Enter multi-line selection mode.
+  Right Arrow    Stage selection (send text without Enter) to Kitty.
+  Left Arrow     Open search interface (requires fzf).
+  Enter          Execute selection in the spawned Kitty instance.
+  c / C          Copy selection to system clipboard.
+  /              Jump to a specific line number.
+  q / Q          Exit the utility.
+
+EOF
+    exit 0
+}
+
+check_dependencies() {
+    command -v kitty &>/dev/null && HAS_KITTY=true
+    command -v fzf &>/dev/null && HAS_FZF=true
+
+    if command -v wl-copy &>/dev/null; then
+        CLIP_CMD="wl-copy"
+        HAS_CLIPBOARD=true
+
+    elif command -v xclip &>/dev/null; then
+        CLIP_CMD="xclip -selection clipboard"
+        HAS_CLIPBOARD=true
+
+    fi
+}
 
 cleanup() {
-    END_TIME=$(date +%s)
-    ELAPSED_TIME=$((END_TIME - START_TIME))
-
-    # Manage the Kitty instance
-    if [[ "$HAS_KITTY" == true ]]; then
+    local elapsed=$(( $(date +%s) - START_TIME ))
+    
+    if [[ "$HAS_KITTY" == true && -S "$KITTY_SOCKET" ]]; then
         echo -e "\n"
-        read -r -s -n 1 -p "Terminate Kitty [y/N]?" choice
+        read -r -s -n 1 -p "Terminate spawned Kitty instance? [y/N]" choice
         if [[ "$choice" =~ ^[yY]$ ]]; then
-            kitty @ --to "unix:$KITTY_SOCKET" send-text "exit\r" 2>/dev/null
-            echo -e "\n${CYAN}Kitty has been terminated...${NC}"
+            kitty @ --to "unix:$KITTY_SOCKET" send-text '\x15\x03\rexit\r' 2>/dev/null
         fi
         rm -f "$KITTY_SOCKET"
     fi
 
-    echo -e "${CYAN}===================================="
-    echo -e "Total time elapsed: ${YELLOW}${ELAPSED_TIME} seconds.${NC}"
-    echo -e "${CYAN}Exiting...${NC}"
+    echo -e "\n${CYAN}Session duration: ${YELLOW}${elapsed}s${NC}"
+    echo -e "${CYAN}Exiting ${BLUE}FiLi${CYAN}...${NC}"
     exit 0
 }
 
-draw_line() {
-    tput rc # Restores cursor to saved position
-    tput ed # Erases everything from cursor to end of screen
+init_kitty() {
+    (
+        echo 'launch --title="FiLi_Remote_Buffer" bash' | \
+        kitty --listen-on "unix:$KITTY_SOCKET" --session -
+    ) >/dev/null 2>&1 </dev/null &
+    
+    # Latency buffer to ensure the Unix socket is created and listening
+    sleep 0.5
+}
 
-    # `sleep` & `tput` command is mutating the first element; Reassign it
+get_selection_range() {
+    local start=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
+    local end=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
+    echo "$start $end"
+}
+
+render_ui() {
+    tput rc # Restore cursor to saved point
+    tput ed # Clear from cursor to end of screen
+
     LINES[0]="$FIRST_LINE"
 
-    if (( SEL_START >= 0 )); then
-        START_INDEX=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
-        END_INDEX=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
-
-        printf "${BLUE}[%d-%d/%d]${NC}\n" "$((START_INDEX+1))" "$((END_INDEX+1))" "$TOTAL_LINES"
-        for ((i=START_INDEX; i<=END_INDEX; i++)); do
-            printf "  %s" "${LINES[$i]}"
-
-            if (( i < END_INDEX )); then
-                printf "\n"
-            fi
+    if (( SEL_START >= 0 )); then # Print multiple lines
+        read -r r_start r_end <<< "$(get_selection_range)"
+        printf "${BLUE}[Range: %d-%d / Total: %d]${NC}\n" "$((r_start+1))" "$((r_end+1))" "$TOTAL_LINES"
+        for ((i=r_start; i<=r_end; i++)); do
+            printf "  %s\n" "${LINES[$i]}"
         done
-    else
-        printf "${BLUE}[%d/%d]${NC} %s" "$((CURRENT_LINE + 1))" "$TOTAL_LINES" "${LINES[$CURRENT_LINE]}"
+
+    else # Print a single line
+        printf "${BLUE}[Line: %d / %d]${NC} %s" "$((CURRENT_LINE + 1))" "$TOTAL_LINES" "${LINES[$CURRENT_LINE]}"
+
     fi
 }
 
-# --- Requirements & Capabilities Check ---
+# --- Action Handlers ---
 
-if command -v wl-copy &> /dev/null; then
-    CLIP_CMD="wl-copy"                      # For Wayland session
-    HAS_CLIPBOARD=true
-elif command -v xclip &> /dev/null; then
-    CLIP_CMD="xclip -selection clipboard"   # For X11 session
-    HAS_CLIPBOARD=true
-else
-    echo -e "${YELLOW}Warning:${NC} Neither 'wl-copy' nor 'xclip' found. Copying disabled."
-    HAS_CLIPBOARD=false
-fi
+handle_clipboard() {
+    [[ "$HAS_CLIPBOARD" == false ]] && return
 
-if [[ -z "$INPUT_FILE" || ! -f "$INPUT_FILE" ]]; then
-    echo -e "${RED}Error:${NC} Usage: $0 <file>"
-    exit 1
-fi
+    if (( SEL_START >= 0 )); then # Multi-line copy
+        read -r r_start r_end <<< "$(get_selection_range)"
+        for ((i=r_start; i<=r_end; i++)); do
+            echo "${LINES[$i]}"
+        done | eval "$CLIP_CMD"
 
-if command -v kitty &> /dev/null; then
-    HAS_KITTY=true
-else
-    HAS_KITTY=false
-fi
+        SEL_START=-1
 
-command -v fzf &>/dev/null && HAS_FZF=true || HAS_FZF=false
+    else # Single line copy
+        echo -n "${LINES[$CURRENT_LINE]}" | eval "$CLIP_CMD"
 
-# --- Initialization ---
-mapfile -t LINES < "$INPUT_FILE"
-TOTAL_LINES=${#LINES[@]}
+    fi
 
-if [[ $TOTAL_LINES -eq 0 ]]; then
-    echo -e "${RED}Error:${NC} Input file is empty."
-    exit 1
-fi
+    printf " ${GREEN}(Copied to Clipboard!)${NC}" && sleep 0.5
+}
 
-SEL_START=-1
-SEL_END=-1
-CURRENT_LINE=0
-FIRST_LINE="${LINES[0]}"
+handle_kitty_send() {
+    local mode="$1" # 'exec' for Enter (with \r), 'stage' for Right Arrow (no \r)
+    [[ "$HAS_KITTY" == false ]] && return
 
-# Launch Kitty only if available
-if [[ "$HAS_KITTY" == true ]]; then
-    (
-        kitty --listen-on "unix:$KITTY_SOCKET" --session - <<EOF
-launch --title="Kitty_Instance_$START_TIME" bash
-EOF
-    ) >/dev/null 2>&1 </dev/null &
-    sleep 0.5 # Wait fo kitty to initialize
-fi
+    local suffix=""
+    [[ "$mode" == "exec" ]] && suffix="\r"
 
-# Ensure cleanup even on error
-trap cleanup EXIT
+    if (( SEL_START >= 0 )); then # Multi-line send
+        read -r r_start r_end <<< "$(get_selection_range)"
+        local text=""
+        for ((i=r_start; i<=r_end; i++)); do
+            text+="${LINES[$i]}"$'\n'
+        done
 
-# --- Header ---
-KITTY_STATUS="$( [[ "$HAS_KITTY" == true ]] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )"
-CLIP_NAME=$([[ "$HAS_CLIPBOARD" == true ]] && echo "$CLIP_CMD" | awk '{print $1}' || echo "None")
-CONTROLS="${YELLOW}Controls:${NC} [${CYAN}↑${NC}/${CYAN}↓${NC}] Navigate | [${CYAN}Shift${NC} + ${CYAN}↑${NC}/${CYAN}↓${NC}] Multi-line"
+        kitty @ --to "unix:$KITTY_SOCKET" send-text --bracketed-paste=enable "$text"
+        kitty @ --to "unix:$KITTY_SOCKET" send-text "$suffix"
+        SEL_START=-1
 
-if [[ "$HAS_FZF" == true ]]; then
-    CONTROLS+=" | [${CYAN}←${NC}] Search"
-fi
+    else # Single line send
+        kitty @ --to "unix:$KITTY_SOCKET" send-text "${LINES[$CURRENT_LINE]}$suffix"
+        [[ "$mode" == "exec" ]] && ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++))
 
-CONTROLS+="\n"
-if [[ "$HAS_KITTY" == true ]]; then
-    CONTROLS+="\t  [${CYAN}Enter${NC}] Exec | [${CYAN}→${NC}] Write"
-fi
+    fi
+    
+    local msg=$([[ "$mode" == "exec" ]] && echo "Executed" || echo "Staged")
+    printf " ${GREEN}($msg!)${NC}" && sleep 0.5
+}
 
-if [[ "$HAS_CLIPBOARD" == true ]]; then
-    CONTROLS+=" | [${CYAN}c${NC}] Copy"
-fi
-CONTROLS+=" | [${CYAN}/${NC}] Jump | [${CYAN}q${NC}] Quit"
+handle_search() {
+    [[ "$HAS_FZF" == false ]] && return
+    
+    tput rc; tput ed # Erase existing lines before search
+    LINES[0]="$FIRST_LINE" # Reassigning because `tput` mutates first element (??)
 
-echo ""
-echo -e "${BLUE}> FiLi [Fine Line]${NC}"
-echo -e "${CYAN}The fine line between navigation and execution.${NC}"
-echo -e "${CYAN}===============================================${NC}"
-echo -e "[Kitty: $KITTY_STATUS | Clip: ${CYAN}$CLIP_NAME${NC}]"
-echo -e "$CONTROLS"
-echo -e "${CYAN}===============================================${NC}"
+    local selected=$(
+        printf "%s\n" "${LINES[@]}" |
+        nl -b a -w2 -s': ' | # Add line number to each line
+        fzf \
+            --prompt="Search > " \
+            --header="Jump to specific line"
+    )
+    
+    if [[ -n "$selected" ]]; then
+        CURRENT_LINE=$(( ${selected%%:*} - 1 ))
+        SEL_START=-1
+    fi
+}
 
-tput sc # Saves the current cursor position
+# --- Main Entry Point ---
 
-# --- Main Event Loop ---
-while true; do
-    draw_line "$CURRENT_LINE"
-
-    IFS= read -rsn1 key
-
-    if [[ $key == $'\e' ]]; then
-        read -rsn5 -t 0.1 seq
-        case "$seq" in
-            '[A') ((CURRENT_LINE > 0)) && ((CURRENT_LINE--)); SEL_START=-1 ;;
-            '[B') ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++)); SEL_START=-1 ;;
-            '[1;2A') # Shift+Up
-                ((CURRENT_LINE > 0)) && ((CURRENT_LINE--))
-                ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE + 1 ))
-                SEL_END=$CURRENT_LINE
-                ;;
-            '[1;2B') # Shift+Down
-                ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++))
-                ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE - 1 ))
-                SEL_END=$CURRENT_LINE
-                ;;
-            '[C') # Right Arrow
-                if [[ "$HAS_KITTY" == true ]]; then
-                    if (( SEL_START >= 0 )); then
-                        START_INDEX=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
-                        END_INDEX=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
-                        TEXT=""
-
-                        for ((i=START_INDEX; i<=END_INDEX; i++)); do
-                            TEXT+="${LINES[$i]}"$'\n'
-                        done
-
-                        kitty @ --to "unix:$KITTY_SOCKET" send-text --bracketed-paste=enable "$TEXT"
-                    else
-                        kitty @ --to "unix:$KITTY_SOCKET" send-text "${LINES[$CURRENT_LINE]}"
-                    fi
-                    printf " ${GREEN}(Staged!)${NC}" && sleep 0.4
-                fi
-                ;;
-            '[D') # Left Arrow
-                if [[ "$HAS_FZF" == true ]]; then
-                    tput rc
-                    tput ed
-
-                    SEL_START=-1
-                    LINES[0]="$FIRST_LINE"
-
-                    SELECTED=$(printf "%s\n" "${LINES[@]}" | nl -b a -w2 -s': ' | fzf --prompt="Search text > " --header="Select a line to jump to")
-                    if [[ -n "$SELECTED" ]]; then
-                        CURRENT_LINE=$(( ${SELECTED%%:*} - 1 ))
-                    fi
+main() {
+    # Argument Parsing
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            -h|--help) show_help ;;
+            -v|--version) echo v0.0.1 && exit 0 ;;
+            *) 
+                if [[ -f "$1" ]]; then
+                    INPUT_FILE="$1"
+                else
+                    echo -e "${RED}Error:${NC} Invalid file '$1'"
+                    exit 1
                 fi
                 ;;
         esac
+        shift # Removes the first argument
+    done
 
-    elif [[ -z "$key" ]]; then # Enter Key
-        if [[ "$HAS_KITTY" == true ]]; then
-            if (( SEL_START >= 0 )); then
-                START_INDEX=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
-                END_INDEX=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
+    [[ -z "$INPUT_FILE" ]] && { echo -e "${RED}Error:${NC} No input file specified."; }
 
-                for ((i=START_INDEX; i<=END_INDEX; i++)); do
-                    kitty @ --to "unix:$KITTY_SOCKET" send-text "${LINES[$i]}\r"
-                done
-                SEL_START=-1
-            else
-                kitty @ --to "unix:$KITTY_SOCKET" send-text "${LINES[$CURRENT_LINE]}\r"
-                ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++))
-            fi
-            printf " ${GREEN}(Executed!)${NC}" && sleep 0.4
+    # Initialization
+    check_dependencies
+
+    mapfile -t LINES < "$INPUT_FILE"
+    TOTAL_LINES=${#LINES[@]}
+    (( TOTAL_LINES == 0 )) && { echo "File is empty."; exit 1; }
+
+    FIRST_LINE="${LINES[0]}"
+
+    [[ "$HAS_KITTY" = true ]] && init_kitty
+    trap cleanup EXIT # Ensure cleanup even on error
+
+    # Initial Header
+    clear
+    echo -e "${BLUE}FiLi [Fine Line]${NC}"
+    echo -e "${CYAN}===============================================${NC}"
+    echo -e "Features: [Kitty: $HAS_KITTY | Clipboard: $HAS_CLIPBOARD | Search: $HAS_FZF]"
+    echo -e "${YELLOW}Navigation:${NC} Arrows | ${YELLOW}Selection:${NC} Shift+Arrows"
+    echo -e "${YELLOW}Actions:${NC} Enter (Exec), c (Copy), / (Jump), q (Quit)"
+    echo -e "${CYAN}===============================================${NC}"
+    
+    tput sc # Save the position of cursor
+
+    # Event Loop
+    while true; do
+        render_ui
+
+        IFS= read -rsn1 key
+        if [[ $key == $'\e' ]]; then
+            read -rsn5 -t 0.05 seq # Timeout to handle multi-char escape sequences
+
+            case "$seq" in
+                '[A') # Up
+                    ((CURRENT_LINE > 0)) && ((CURRENT_LINE--)); SEL_START=-1 ;;
+
+                '[B') # Down
+                    ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++)); SEL_START=-1 ;;
+
+                '[1;2A') # Shift+Up (Selection Mode)
+                    ((CURRENT_LINE > 0)) && ((CURRENT_LINE--))
+                    ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE + 1 ))
+                    SEL_END=$CURRENT_LINE
+                    ;;
+
+                '[1;2B') # Shift+Down (Selection Mode)
+                    ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++))
+                    ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE - 1 ))
+                    SEL_END=$CURRENT_LINE
+                    ;;
+
+                '[C') # Right
+                    handle_kitty_send "stage" ;;
+
+                '[D') # Left
+                    handle_search ;;
+
+            esac
+        elif [[ -z "$key" ]]; then # Enter
+            handle_kitty_send "exec"
+        else
+            case "$key" in
+                /)
+                    tput rc; tput ed
+                    read -rp "Jump to line: " ln
+
+                    if [[ "$ln" =~ ^[0-9]+$ ]] && (( ln >= 1 && ln <= TOTAL_LINES )); then
+                        CURRENT_LINE=$((ln - 1))
+                        SEL_START=-1
+                    fi
+
+                    ;;
+                c|C) handle_clipboard ;;
+                q|Q) break ;;
+            esac
         fi
-    fi
+    done
+}
 
-    case "$key" in
-        /)
-            tput rc
-            tput ed
-            read -rp "Jump to line: " LINE_NO
-            if [[ "$LINE_NO" =~ ^[0-9]+$ ]] && (( LINE_NO >= 1 && LINE_NO <= TOTAL_LINES )); then
-                CURRENT_LINE=$((LINE_NO - 1))
-                SEL_START=-1
-            fi
-            ;;
-        c|C)
-            if [[ "$HAS_CLIPBOARD" == true ]]; then
-                if (( SEL_START >= 0 )); then
-                    START_INDEX=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
-                    END_INDEX=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
-
-                    for ((i=START_INDEX; i<=END_INDEX; i++)); do
-                        printf "%s\n" "${LINES[$i]}"
-                    done | $CLIP_CMD
-                    SEL_START=-1
-                else
-                    echo -n "${LINES[$CURRENT_LINE]}" | $CLIP_CMD
-                fi
-                printf " ${GREEN}(Copied!)${NC}" && sleep 0.4
-            fi
-            ;;
-        q|Q)
-            break
-            ;;
-    esac
-done
+# Execute the script
+main "$@"
