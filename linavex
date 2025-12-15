@@ -23,9 +23,7 @@ cleanup() {
     END_TIME=$(date +%s)
     ELAPSED_TIME=$((END_TIME - START_TIME))
 
-    echo -e "\n"
-
-    # Kitty instance
+    # Manage the Kitty instance
     if [[ "$HAS_KITTY" == true ]]; then
         read -r -s -n 1 -p "Terminate Kitty [y/N]?" choice
         if [[ "$choice" =~ ^[yY]$ ]]; then
@@ -35,7 +33,7 @@ cleanup() {
         rm -f "$KITTY_SOCKET"
     fi
 
-    echo -e "\n${CYAN}===================================="
+    echo -e "${CYAN}===================================="
     echo -e "Total time elapsed: ${YELLOW}${ELAPSED_TIME} seconds.${NC}"
     echo -e "${CYAN}Exiting...${NC}"
     exit 0
@@ -58,8 +56,8 @@ elif command -v xclip &> /dev/null; then
     CLIP_CMD="xclip -selection clipboard"   # For X11 session
     HAS_CLIPBOARD=true
 else
-    HAS_CLIPBOARD=false
     echo -e "${YELLOW}Warning:${NC} Neither 'wl-copy' nor 'xclip' found. Copying disabled."
+    HAS_CLIPBOARD=false
 fi
 
 if [[ -z "$INPUT_FILE" || ! -f "$INPUT_FILE" ]]; then
@@ -99,19 +97,21 @@ fi
 trap cleanup EXIT
 
 # --- Header ---
+KITTY_STATUS="$( [[ "$HAS_KITTY" == true ]] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )"
 CLIP_NAME=$([[ "$HAS_CLIPBOARD" == true ]] && echo "$CLIP_CMD" | awk '{print $1}' || echo "None")
-echo -e "${BLUE}Line Navigator & Executor${NC}"
-echo -e "[Kitty: $( [[ "$HAS_KITTY" == true ]] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )\
- | Clip: ${CYAN}$CLIP_NAME${NC}]"
-echo -n -e "${YELLOW}Controls:${NC} [↑/↓] Nav | [q] Quit"
+CONTROLS="${YELLOW}Controls:${NC} [${CYAN}↑${NC}/${CYAN}↓${NC}] Nav | [${CYAN}q${NC}] Quit"
+
 if [[ "$HAS_KITTY" == true ]]; then
-    echo -n -e " | [Enter] Exec | [→] Write"
+    CONTROLS+=" | [${CYAN}Enter${NC}] Exec | [${CYAN}→${NC}] Write"
 fi
+
 if [[ "$HAS_CLIPBOARD" == true ]]; then
-    echo -e " | [c] Copy"
-else
-    echo ""
+    CONTROLS+=" | [${CYAN}c${NC}] Copy"
 fi
+
+echo -e "${BLUE}Line Navigator & Executor${NC}"
+echo -e "[Kitty: $KITTY_STATUS | Clip: ${CYAN}$CLIP_NAME${NC}]"
+echo -e "$CONTROLS"
 echo -e "${CYAN}====================================${NC}"
 
 # --- Main Event Loop ---
