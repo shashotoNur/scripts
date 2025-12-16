@@ -1,0 +1,97 @@
+#!/bin/bash
+
+T_START=$(date +%s%N)
+T_PAUSE_TOTAL=0
+T_LAST_PAUSE=0
+T_LAP_COUNT=0
+LAP_HISTORY=""
+IS_RUNNING=1
+
+BOLD="\e[1m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+RESET="\e[0m"
+
+tput civis
+tput clear
+
+format_time() {
+    local ns=$1
+    local total_ms=$((ns / 1000000))
+    local d=$((total_ms % 1000 / 100))
+    local total_s=$((total_ms / 1000))
+    local H=$((total_s / 3600))
+    local M=$((total_s % 3600 / 60))
+    local S=$((total_s % 60))
+    printf "%02d:%02d:%02d.%d" "$H" "$M" "$S" "$d"
+}
+
+draw_ui() {
+    clear
+
+    echo -e "${BOLD}${GREEN}Stopwatch Running!${RESET}"
+    echo -e "Controls: ${BOLD}[P] Pause/Resume | [L]ap/Step | [Q]uit${RESET}"
+    echo -e "------------------------------------------------------"
+    tput cup 4 0
+    printf "${BOLD}Time: %s${RESET}" "$(format_time "$T_ELAPSED")"
+    tput cup 6 0
+    echo -e "Status: ${STATUS_MSG}"
+}
+
+cleanup() {
+    tput cnorm
+    stty echo
+    local FINAL_TIME=$(format_time "$T_ELAPSED")
+
+    echo -e "\n\n${YELLOW}Stopwatch stopped. Final Time: ${BOLD}${FINAL_TIME}${RESET}"
+    echo -e "--- Laps/Steps History ---"
+    if [[ -z "$LAP_HISTORY" ]]; then
+        echo "No laps recorded."
+    else
+        echo -e "$LAP_HISTORY"
+    fi
+}
+
+trap cleanup EXIT
+stty -echo
+
+STATUS_MSG="${GREEN}RUNNING${RESET}"
+
+while true; do
+    read -n 1 -t 0.05 KEY
+
+    if [[ -n "$KEY" ]]; then
+        case "$KEY" in
+            [pP])
+                if [[ $IS_RUNNING -eq 1 ]]; then
+                    T_LAST_PAUSE=$(date +%s%N)
+                    IS_RUNNING=0
+                    STATUS_MSG="${YELLOW}PAUSED${RESET}"
+                elif [[ $IS_RUNNING -eq 0 ]]; then
+                    T_CURRENT=$(date +%s%N)
+                    T_PAUSE_DURATION=$((T_CURRENT - T_LAST_PAUSE))
+                    T_PAUSE_TOTAL=$((T_PAUSE_TOTAL + T_PAUSE_DURATION))
+                    IS_RUNNING=1
+                    T_LAST_PAUSE=0
+                    STATUS_MSG="${GREEN}RUNNING${RESET}"
+                fi
+                ;;
+            [lL])
+                T_LAP_COUNT=$((T_LAP_COUNT + 1))
+                LAP_TIME=$(format_time "$T_ELAPSED")
+                LAP_HISTORY+="Lap $T_LAP_COUNT: ${LAP_TIME}\n"
+                STATUS_MSG="${BOLD}[LAP]${RESET} Recorded: ${LAP_TIME}"
+                ;;
+            [qQ])
+                break
+                ;;
+        esac
+    fi
+
+    if [[ $IS_RUNNING -eq 1 ]]; then
+        T_CURRENT=$(date +%s%N)
+        T_ELAPSED=$((T_CURRENT - T_START - T_PAUSE_TOTAL))
+    fi
+
+    draw_ui
+done
