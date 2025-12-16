@@ -1,43 +1,45 @@
+# ===============================================
+# 1. CORE SHELL COMMANDS & NAVIGATION
+# ===============================================
+
+# Navigation
 alias cl='clear'
 alias rs='reset'
-alias showmac='echo "Wired (eno1) MAC: $(ip a show eno1 | grep -oP "link/ether \K[^ ]+")" && echo "Wireless (wlo1) MAC: $(ip a show wlo1 | grep -oP "link/ether \K[^ ]+")"'
-alias ipv4="ip addr show | grep 'inet ' | grep -v '127.0.0.1' | cut -d' ' -f6 | cut -d/ -f1"
-alias ipv6="ip addr show | grep 'inet6 ' | cut -d ' ' -f6 | sed -n '2p'"
-alias error='journalctl -b -p err'
-alias localpkg="pacman -Qq | fzf --preview 'pacman -Qil {}' --layout=reverse --bind 'enter:execute(pacman -Qil {} | less)'"
-alias remotepkg="pacman -Slq | fzf --preview 'pacman -Si {}' --layout=reverse"
-alias mirrorupdate="sudo reflector --country US --age 12 --protocol https --sort rate --threads 10 --download-timeout 15 --save /etc/pacman.d/mirrorlist"
 alias cale='cal -3'
-alias grep='rg'
-alias mv='command mv -nv'
-alias cp='command cp -rnv'
-alias daty='date +%Y-%m-%d'
-alias togglekey='[ "$(ibus engine)" = "ibus-avro" ] && ibus engine xkb:us::eng || ibus engine ibus-avro'
-alias 0x0="curl -F 'file=@-' 0x0.st"
-alias lsblkk='lsblk -o NAME,FSTYPE,PARTLABEL,LABEL,MOUNTPOINT,TYPE,TRAN,SIZE,MODEL,VENDOR'
-alias reload="source $HOME/.zshrc"
-alias vpnup="sudo wg-quick up nexus-JP-FREE33"
-alias vpndown="sudo wg-quick down nexus-JP-FREE33"
-gcaur () {
-    if [ -z "$1" ]; then
-        echo "Error: Please provide a package name."
-        echo "Usage: gcaur <package_name>"
-        return 1
-    fi
-    
-    # The actual command: clones only the specific branch (package) 
-    # and places it in a directory with the same name.
-    git clone --branch "$1" --single-branch https://github.com/archlinux/aur.git "$1"
-    
-    if [ $? -eq 0 ]; then
-        echo -e "\nSuccessfully cloned '$1'"
-        echo "Next steps: cd $1 && yay -Bi ."
-    fi
-}
+alias grep='rg'                # Use ripgrep (rg) as default grep
+alias rm=rmtrash               # Safer remove (moves to trash)
+alias rmdir=rmdirtrash         # Safer remove directory (moves to trash)
+alias ping='ping -c 5'
+alias pingg='ping archlinux.org'
+alias :q='exit'                                 # Quicker exit
+alias reload="source $ZDOTDIR/.zshrc"           # Source RC file
+alias pathlist='echo "$PATH" | tr ":" "\n"'     # View PATH line-by-line
+
+# Directory Aliases and Functions
+cdls() { builtin cd "$1" && ls }
+zls() { command z "$1" && ls }
+alias cd='cdls'                # cd and then ls
+alias z='zls'                  # zsh-z and then ls
+alias ls='eza --header --git --group-directories-first --icons=always -s extension' # Modern ls
+alias ll='ls -lh'              # Long listing, human readable
+alias md='mkdir -p'            # Make directory and parents
+mkcd() { md $1 && cd $1 }      # Make directory and change into it
+
+# Parent Directory Jumps
 alias ...=../..
 alias ....=../../..
 alias .....=../../../..
 alias ......=../../../../..
+
+# File Operations
+alias mv='command mv -nv'      # Move: no-clobber, verbose
+alias cp='command cp -rnv'     # Copy: recursive, no-clobber, verbose
+
+
+# ===============================================
+# 2. GIT ALIASES
+# ===============================================
+
 alias g=git
 alias ga='git add'
 alias gc='git commit --verbose'
@@ -51,14 +53,71 @@ alias gloga='git log --oneline --decorate --graph --all'
 alias gp='git push'
 alias gra='git remote add'
 alias gst='git status --short'
-alias history=omz_history
-alias remove_padding="kitty @ set-spacing padding-left=0 padding-top=0 padding-right=0 padding-bottom=0"
-alias restore_padding="kitty @ set-spacing padding-left=default padding-top=default padding-right=default padding-bottom=default"
-neovim() {
-     remove_padding
-     nvim "$1"
-     restore_padding
+
+
+# ===============================================
+# 3. NETWORKING & SYSTEM INFO
+# ===============================================
+
+alias ipv4="ip addr show | grep 'inet ' | grep -v '127.0.0.1' | cut -d' ' -f6 | cut -d/ -f1"    # Primary IPv4
+alias ipv6="ip addr show | grep 'inet6 ' | cut -d ' ' -f6 | sed -n '2p'"                        # Primary IPv6
+alias pubip='curl ifconfig.me; echo'    # External IP
+alias whoisit='echo "$USER@$HOST"'      # Simple user/host display
+alias showmac='echo "Wired (eno1) MAC: $(ip a show eno1 | grep -oP "link/ether \K[^ ]+")" && echo "Wireless (wlo1) MAC: $(ip a show wlo1 | grep -oP "link/ether \K[^ ]+")"'
+alias lsblkk='lsblk -o NAME,FSTYPE,PARTLABEL,LABEL,MOUNTPOINT,TYPE,TRAN,SIZE,MODEL,VENDOR'  # Detailed lsblk
+alias diskspace='df -hT --exclude-type=tmpfs --exclude-type=devtmpfs'                       # Human-readable disk usage
+
+# VPN
+alias vpnup="sudo wg-quick up nexus-JP-FREE33"
+alias vpndown="sudo wg-quick down nexus-JP-FREE33"
+
+# ===============================================
+# 4. TIME & UTILITY
+# ===============================================
+
+alias daty='date +%Y-%m-%d'    # Simple YYYY-MM-DD format
+alias clock='watch -n 1 date +"%T"' # Live digital clock (HH:MM:SS)
+weather() { curl "wttr.in/$1" | head -n -1; } # Weather for location
+alias top-commands="history | awk '{if (\$2 != \"\") CMD[\$2]++; count++;} END { for (a in CMD) print CMD[a], CMD[a]/count*100 \"%\", a;}' | grep -v \"./\" | column -c3 -s \" \" -t | sort -nr | nl | head -n10" # Top 10 commands
+alias cpb=wl-copy              # Copy to clipboard (requires wl-clipboard)
+alias 0x0="curl -F 'file=@-' 0x0.st" # Upload pipe data to 0x0.st
+
+# ===============================================
+# 5. PACMAN/AUR & ARCHLINUX
+# ===============================================
+
+alias localpkg="pacman -Qq | fzf --preview 'pacman -Qil {}' --layout=reverse --bind 'enter:execute(pacman -Qil {} | less)'" # Search installed packages
+alias remotepkg="pacman -Slq | fzf --preview 'pacman -Si {}' --layout=reverse" # Search remote packages
+alias mirrorupdate="sudo reflector --country US --age 12 --protocol https --sort rate --threads 10 --save /etc/pacman.d/mirrorlist" # Update mirrors
+alias error='journalctl -b -p err' # View errors from current boot
+alias drop_caches="echo 3 | sudo tee /proc/sys/vm/drop_caches" # Free up system memory caches
+
+# Get AUR packages from Github if AUR is down
+gcaur () {
+    if [ -z "$1" ]; then
+        echo "Error: Please provide a package name."
+        echo "Usage: gcaur <package_name>"
+        return 1
+    fi
+
+    git clone --branch "$1" --single-branch https://github.com/archlinux/aur.git "$1"
+
+    if [ $? -eq 0 ]; then
+        echo -e "\nSuccessfully cloned '$1'"
+        echo "Next steps: cd $1 && yay -Bi ."
+    fi
 }
+
+# ===============================================
+# 6. EDITOR & WORKFLOW
+# ===============================================
+
+alias scratch='$EDITOR $(mktemp)'   # Open a temporary text file
+alias addquote="sed -i 's/^/> /'"   # Add quote padding
+alias rmquote="sed -i 's/^> //'"    # Remove quote padding
+alias reset-nvim="rm -rf ~/.config/nvim ~/.local/share/nvim ~/.local/state/nvim ~/.cache/nvim" # Wipe NVIM configuration
+
+# Interactive File Open in Neovim (inv)
 inv() {
   local files
   files=$(command find * -type f | fzf -m --preview="bat --color=always --style=numbers {}")
@@ -72,46 +131,45 @@ inv() {
     neovim "${file_array[@]}"
   fi
 }
-alias ll='ls -lh'
-alias ls='eza --header --git --group-directories-first --icons=always -s extension'
-alias md='mkdir -p'
-alias ohmyzsh='nano ~/.oh-my-zsh'
-alias rm=rmtrash
-alias rmdir=rmdirtrash
-alias top-commands="history | awk '{if (\$2 != \"\") CMD[\$2]++; count++;} END { for (a in CMD) print CMD[a], CMD[a]/count*100 \"%\", a;}' | grep -v \"./\" | column -c3 -s \" \" -t | sort -nr | nl | head -n10"
-alias whoisit='echo "$USER@$HOST"'
-alias z='zshz 2>&1'
-alias ping='ping -c 5'
-alias pingg='ping archlinux.org'
-alias pubip='curl ifconfig.me; echo'
-alias :q='exit'
-alias cpb=wl-copy
-alias drop_caches "echo 3 | sudo tee /proc/sys/vm/drop_caches"
-alias hddusage="df -h | grep --color=never -E '^Filesystem|/dev/sda'"
-alias reset-nvim="rm -rf ~/.config/nvim ~/.local/share/nvim ~/.local/state/nvim ~/.cache/nvim"
-alias crun='f(){ gcc -o "${1%.c}.bin" "$1" && kitty sh -c "./${1%.c}.bin; echo -e \"\n\nPress any key to close...\"; read" && rm "${1%.c}.bin"; }; f'
-zls() { command z "$1" && ls }
-cdls() { builtin cd "$1" && ls }
-alias cd='cdls'
-alias z='zls'
-mkcd() { md $1 && cd $1 }
-weather() { curl "wttr.in/$1" | head -n -1; }
-bt() {
-    if [[ "$1" == "connect" ]]; then
-        bluetoothctl connect "$(bluetoothctl devices | awk -v device_name="$2" '$0 ~ device_name {print $2}')"
-    elif [[ "$1" == "disconnect" ]]; then
-        bluetoothctl disconnect "$(bluetoothctl devices | awk -v device_name="$2" '$0 ~ device_name {print $2}')"
-    else
-        echo "Usage: bt connect *device name* or bt disconnect *device name*"
-    fi
+
+# C Compile and Run
+crun='f(){ gcc -o "${1%.c}.bin" "$1" && kitty sh -c "./${1%.c}.bin; echo -e \"\n\nPress any key to close...\"; read" && rm "${1%.c}.bin"; }; f'
+
+
+# ===============================================
+# 7. KITTY & TERMINAL CUSTOMIZATION
+# ===============================================
+
+# Kitty Padding Control
+alias remove_padding="kitty @ set-spacing padding-left=0 padding-top=0 padding-right=0 padding-bottom=0"
+alias restore_padding="kitty @ set-spacing padding-left=default padding-top=default padding-right=default padding-bottom=default"
+
+# Neovim Wrapper
+neovim() {
+     remove_padding
+     nvim "$1"
+     restore_padding
 }
-alias rain='terminal-rain --rain-color blue --lightning-color white'
+
+# Kitty Native Support
+alias kittyplay="mpv --no-config --vo=kitty --really-quiet --loop-file=inf" # Play video/audio in terminal
+
+# Screensavers
+alias rain='terminal-rain --rain-color blue --lightning-color white' # Matrix rain effect
 screensaver () {
         kitty @ set-spacing padding-left=5 padding-top=0 padding-right=5 padding-bottom=0
-        cmatrix -C blue -s -M "Nexus is now on standby..."
+        cmatrix -C blue -s -M "$HOST is now on standby..."
         kitty @ set-spacing padding-left=default padding-top=default padding-right=default padding-bottom=default
 }
 
+# ===============================================
+# 8. OTHER UTILITIES & I/O
+# ===============================================
+
+# Input Method/Keyboard Layout Toggle
+alias togglekey='[ "$(ibus engine)" = "ibus-avro" ] && ibus engine xkb:us::eng || ibus engine ibus-avro'
+
+# Windows Application Runner (Bottles)
 bottlesrun() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "Error: Two arguments are required."
@@ -120,3 +178,18 @@ bottlesrun() {
     fi
     prime-run flatpak run --command=bottles-cli com.usebottles.bottles run -b "$1" -e "$2"
 }
+
+# Bluetooth Control
+bt() {
+    if [[ "$1" == "connect" ]]; then
+        bluetoothctl connect "$(bluetoothctl devices | awk -v device_name="$2" '$0 ~ device_name {print $2}')"
+    elif [[ "$1" == "disconnect" ]]; then
+        bluetoothctl disconnect "$(bluetoothctl devices | awk -v device_name="$2" '$0 ~ device_name {print $2}')"
+    else
+        echo "Usage: bt connect/disconnect *device name*"
+    fi
+}
+
+# System Control
+alias bootuefi="systemctl reboot --firmware-setup"                                          # Reboot into UEFI/BIOS setup
+alias wakefor="systemd-inhibit --why=\"Awaiting PID $1\" tail --pid=\"$1\" -f /dev/null"    # Wait for PID termination without sleeping

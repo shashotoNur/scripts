@@ -75,20 +75,32 @@ check_dependencies() {
     fi
 }
 
+check_status() {
+    if [[ "$(eval echo "\$$1")" = true ]]; then
+        echo -e "${GREEN}Active${NC}"
+    else
+        echo -e "${RED}Inactive${NC}"
+    fi
+}
+
 cleanup() {
     local elapsed=$(( $(date +%s) - START_TIME ))
     
     if [[ "$HAS_KITTY" == true && -S "$KITTY_SOCKET" ]]; then
         echo -e "\n"
-        read -r -s -n 1 -p "Terminate spawned Kitty instance? [y/N]" choice
+        read -r -s -n 1 -p "Terminate Kitty instance? [y/N]" choice
+
         if [[ "$choice" =~ ^[yY]$ ]]; then
-            kitty @ --to "unix:$KITTY_SOCKET" send-text '\x15\x03\rexit\r' 2>/dev/null
+            # \x15 (Ctrl+U): Clears the current command line buffer
+            kitty @ --to "unix:$KITTY_SOCKET" send-text '\x15exit\r' 2>/dev/null
         fi
+
         rm -f "$KITTY_SOCKET"
     fi
 
     echo -e "\n${CYAN}Session duration: ${YELLOW}${elapsed}s${NC}"
     echo -e "${CYAN}Exiting ${BLUE}FiLi${CYAN}...${NC}"
+
     exit 0
 }
 
@@ -105,6 +117,7 @@ init_kitty() {
 get_selection_range() {
     local start=$(( SEL_START < SEL_END ? SEL_START : SEL_END ))
     local end=$(( SEL_START > SEL_END ? SEL_START : SEL_END ))
+
     echo "$start $end"
 }
 
@@ -113,16 +126,17 @@ render_ui() {
     tput ed # Clear from cursor to end of screen
 
     LINES[0]="$FIRST_LINE"
+    WIDTH=${#TOTAL_LINES}
 
     if (( SEL_START >= 0 )); then # Print multiple lines
         read -r r_start r_end <<< "$(get_selection_range)"
-        printf "${BLUE}[Range: %d-%d / Total: %d]${NC}\n" "$((r_start+1))" "$((r_end+1))" "$TOTAL_LINES"
+
         for ((i=r_start; i<=r_end; i++)); do
-            printf "  %s\n" "${LINES[$i]}"
+            printf "${BLUE}[%0*d/%d]${NC} %s\n" "$WIDTH" "$(($i + 1))" "$TOTAL_LINES" "${LINES[$i]}"
         done
 
     else # Print a single line
-        printf "${BLUE}[Line: %d / %d]${NC} %s" "$((CURRENT_LINE + 1))" "$TOTAL_LINES" "${LINES[$CURRENT_LINE]}"
+        printf "${BLUE}[%0*d/%d]${NC} %s\n" "$WIDTH" "$((CURRENT_LINE + 1))" "$TOTAL_LINES" "${LINES[$CURRENT_LINE]}"
 
     fi
 }
@@ -134,6 +148,7 @@ handle_clipboard() {
 
     if (( SEL_START >= 0 )); then # Multi-line copy
         read -r r_start r_end <<< "$(get_selection_range)"
+
         for ((i=r_start; i<=r_end; i++)); do
             echo "${LINES[$i]}"
         done | eval "$CLIP_CMD"
@@ -219,27 +234,41 @@ main() {
     [[ -z "$INPUT_FILE" ]] && { echo -e "${RED}Error:${NC} No input file specified."; }
 
     # Initialization
-    check_dependencies
+    check_dependencies # [kitty, clipboard, fzf]
 
     mapfile -t LINES < "$INPUT_FILE"
     TOTAL_LINES=${#LINES[@]}
     (( TOTAL_LINES == 0 )) && { echo "File is empty."; exit 1; }
 
-    FIRST_LINE="${LINES[0]}"
+    FIRST_LINE="${LINES[0]}" # Track first line as it may need to be restored
+
+    if [[ "$HAS_KITTY" = true ]]; then
+        read -r -s -n 1 -p "Launch Kitty instance? [Y/n]" choice
+
+        if [[ "$choice" =~ ^[nN]$ ]]; then
+            HAS_KITTY=false
+        fi
+    fi
 
     [[ "$HAS_KITTY" = true ]] && init_kitty
     trap cleanup EXIT # Ensure cleanup even on error
+
+    # Check available controls
+    kitty_actions=$([[ "$HAS_KITTY" = true ]] && echo '[→] Write, [Enter] Exec, ' || echo '')
+    clipboard_action=$([[ "$HAS_CLIPBOARD" = true ]] && echo '[c] Copy, ' || echo '')
+    fzf_action=$([[ "$HAS_FZF" = true ]] && echo '[←] Search, ' || echo '')
 
     # Initial Header
     clear
     echo -e "${BLUE}FiLi [Fine Line]${NC}"
     echo -e "${CYAN}===============================================${NC}"
-    echo -e "Features: [Kitty: $HAS_KITTY | Clipboard: $HAS_CLIPBOARD | Search: $HAS_FZF]"
-    echo -e "${YELLOW}Navigation:${NC} Arrows | ${YELLOW}Selection:${NC} Shift+Arrows"
-    echo -e "${YELLOW}Actions:${NC} Enter (Exec), c (Copy), / (Jump), q (Quit)"
+    echo -e "Features: [Kitty: $(check_status HAS_KITTY) | Clipboard: $(check_status HAS_CLIPBOARD) | Search: $(check_status HAS_FZF)]"
+    echo -e "${YELLOW}Navigation:${NC} [↑/↓] | [Shift+↑/↓], $fzf_action[/] Jump"
+    echo -e "${YELLOW}Actions:${NC}  $kitty_actions$clipboard_action[q] Quit"
     echo -e "${CYAN}===============================================${NC}"
     
-    tput sc # Save the position of cursor
+    tput sc     # Save the position of cursor
+    tput civis  # Makes cursor invisible
 
     # Event Loop
     while true; do
@@ -259,12 +288,14 @@ main() {
                 '[1;2A') # Shift+Up (Selection Mode)
                     ((CURRENT_LINE > 0)) && ((CURRENT_LINE--))
                     ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE + 1 ))
+
                     SEL_END=$CURRENT_LINE
                     ;;
 
                 '[1;2B') # Shift+Down (Selection Mode)
                     ((CURRENT_LINE < TOTAL_LINES - 1)) && ((CURRENT_LINE++))
                     ((SEL_START < 0)) && SEL_START=$(( CURRENT_LINE - 1 ))
+
                     SEL_END=$CURRENT_LINE
                     ;;
 
@@ -277,6 +308,7 @@ main() {
             esac
         elif [[ -z "$key" ]]; then # Enter
             handle_kitty_send "exec"
+
         else
             case "$key" in
                 /)
@@ -289,6 +321,7 @@ main() {
                     fi
 
                     ;;
+
                 c|C) handle_clipboard ;;
                 q|Q) break ;;
             esac
