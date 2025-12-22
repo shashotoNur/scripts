@@ -236,7 +236,7 @@ main() {
     # Initialization
     check_dependencies # [kitty, clipboard, fzf]
 
-    mapfile -t LINES < "$INPUT_FILE"
+    mapfile -t LINES < <(pygmentize -l bash "$INPUT_FILE")
     TOTAL_LINES=${#LINES[@]}
     (( TOTAL_LINES == 0 )) && { echo "File is empty."; exit 1; }
 
