@@ -12,7 +12,7 @@ alias rmdir=rmdirtrash         # Safer remove directory (moves to trash)
 alias ping='ping -c 5'
 alias pingg='ping archlinux.org'
 alias :q='exit'                                 # Quicker exit
-alias reload="source $ZDOTDIR/.zshrc"           # Source RC file
+alias reload="source $HOME/.zshrc"              # Source RC file
 alias pathlist='echo "$PATH" | tr ":" "\n"'     # View PATH line-by-line
 
 # Directory Aliases and Functions
@@ -81,6 +81,7 @@ weather() { curl "wttr.in/$1" | head -n -1; } # Weather for location
 alias top-commands="history | awk '{if (\$2 != \"\") CMD[\$2]++; count++;} END { for (a in CMD) print CMD[a], CMD[a]/count*100 \"%\", a;}' | grep -v \"./\" | column -c3 -s \" \" -t | sort -nr | nl | head -n10" # Top 10 commands
 alias cpb=wl-copy              # Copy to clipboard (requires wl-clipboard)
 alias 0x0="curl -F 'file=@-' 0x0.st" # Upload pipe data to 0x0.st
+alias fastfetch='fastfetch --logo-type kitty'
 
 # ===============================================
 # 5. PACMAN/AUR & ARCHLINUX
@@ -166,6 +167,15 @@ screensaver () {
 # 8. OTHER UTILITIES & I/O
 # ===============================================
 
+# Arduino IDE
+alias arduino='arduino-ide --enable-features=UseOzonePlatform --ozone-platform=x11'
+
+# Youtube Music playlist download
+alias ytmusic="yt-dlp -x --audio-format mp3 --download-archive archive.txt --embed-thumbnail --embed-metadata" # ytmusic --cookies <cookies.txt> <url>
+
+# Github clone all of user's repositories
+alias ghclone="gh repo list \"$1\" --limit 9999 | while read -r repo_name _; do gh repo clone \"$repo_name\"; done"
+
 # Input Method/Keyboard Layout Toggle
 alias togglekey='[ "$(ibus engine)" = "ibus-avro" ] && ibus engine xkb:us::eng || ibus engine ibus-avro'
 
@@ -192,4 +202,10 @@ bt() {
 
 # System Control
 alias bootuefi="systemctl reboot --firmware-setup"                                          # Reboot into UEFI/BIOS setup
-alias wakefor="systemd-inhibit --why=\"Awaiting PID $1\" tail --pid=\"$1\" -f /dev/null"    # Wait for PID termination without sleeping
+wakefor() {
+    if [ -z "$1" ]; then
+        echo "Usage: wakefor <PID>"
+        return 1
+    fi
+    systemd-inhibit --why="Awaiting PID $1" tail --pid="$1" -f /dev/null
+}   # Wait for PID termination without sleeping
