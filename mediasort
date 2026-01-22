@@ -30,18 +30,20 @@ while [ $index -lt ${#files[@]} ]; do
     chafa --size=120x30 "$file"
   fi
 
-  choice=$(printf "remove\nkeep\nskip\nundo" | fzf --height=5% --prompt="Action: ")
+remaining=$(( ${#files[@]} - index ))
+
+choice=$(printf "remove\nkeep\nundo\nskip" | fzf \
+  --height=10% \
+  --header="Files remaining: $remaining / ${#files[@]}" \
+  --prompt="Action for $(basename "$file"): ")
 
   case "$choice" in
-    keep)
-      decisions["$file"]="keep"
-      ((index++))
-      ;;
     remove)
       decisions["$file"]="remove"
       ((index++))
       ;;
-    skip)
+    keep)
+      decisions["$file"]="keep"
       ((index++))
       ;;
     undo)
@@ -49,6 +51,9 @@ while [ $index -lt ${#files[@]} ]; do
         ((index--))
         unset 'decisions["${files[$index]}"]'
       fi
+      ;;
+    skip)
+      ((index++))
       ;;
     *)
       echo "Exiting..."
