@@ -5,7 +5,6 @@ shopt -s nullglob
 DIR="${1:-.}"
 KEEP_DIR="$DIR/keep"
 REMOVE_DIR="$DIR/remove"
-RECORD_FILE="$(mktemp)"
 
 declare -A decisions
 declare -a files
@@ -24,18 +23,25 @@ while [ $index -lt ${#files[@]} ]; do
   file="${files[$index]}"
 
   if file --mime-type "$file" | grep -qE 'video|audio'; then
-    mpv --no-config --vo=kitty --vo-kitty-use-shm=yes --profile=sw-fast --really-quiet --loop-file=inf "$file"
+    mpv --no-config \
+        --vo=kitty \
+        --vo-kitty-use-shm=yes \
+        --profile=sw-fast \
+        --really-quiet \
+        --loop-file=inf \
+        --input-conf=<(echo "ENTER quit") \
+        "$file"
     reset
   else
     chafa --size=120x30 "$file"
   fi
 
-remaining=$(( ${#files[@]} - index ))
+  remaining=$(( ${#files[@]} - index ))
 
-choice=$(printf "remove\nkeep\nundo\nskip" | fzf \
-  --height=10% \
-  --header="Files remaining: $remaining / ${#files[@]}" \
-  --prompt="Action for $(basename "$file"): ")
+  choice=$(printf "remove\nkeep\nundo\nskip" | fzf \
+    --height=10% \
+    --header="Files remaining: $remaining / ${#files[@]}" \
+    --prompt="Action for $(basename "$file"): ")
 
   case "$choice" in
     remove)
