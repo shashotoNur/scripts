@@ -35,6 +35,7 @@ alias ......=../../../../..
 alias mv='command mv -nv'      # Move: no-clobber, verbose
 alias cp='command cp -rnv'     # Copy: recursive, no-clobber, verbose
 
+alias delete-empty-files='find . -type f -empty -delete'
 
 # ===============================================
 # 2. GIT ALIASES
@@ -82,6 +83,7 @@ alias top-commands="history | awk '{if (\$2 != \"\") CMD[\$2]++; count++;} END {
 alias cpb=wl-copy              # Copy to clipboard (requires wl-clipboard)
 alias 0x0="curl -F 'file=@-' 0x0.st" # Upload pipe data to 0x0.st
 alias fastfetch='fastfetch --logo-type kitty'
+alias rn='f(){ n=$1; shift; for i in $(seq 1 $n); do "$@"; done; unset f; }; f'
 
 # ===============================================
 # 5. PACMAN/AUR & ARCHLINUX
@@ -169,6 +171,9 @@ screensaver () {
 
 # Arduino IDE
 alias arduino='arduino-ide --enable-features=UseOzonePlatform --ozone-platform=x11'
+
+# EMU8086
+alias emu8086='WINEPREFIX=~/.emu8086_wine wine ~/.emu8086_wine/drive_c/emu8086/emu8086.exe'
 
 # Youtube Music playlist download
 alias ytmusic="yt-dlp -x --audio-format mp3 --download-archive archive.txt --embed-thumbnail --embed-metadata" # ytmusic --cookies <cookies.txt> <url>
