@@ -2,7 +2,7 @@
 
 # Define the source and target directories
 KDECONNECT_DIR="$HOME/.local/share/kpeoplevcard"
-TARGET_DIR="$HOME/Backups/contacts"
+TARGET_DIR=${1:-"$HOME/Backups/contacts"}
 
 # Create the target directory if it doesn't exist
 mkdir -p "$TARGET_DIR"
