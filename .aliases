@@ -77,6 +77,7 @@ alias vpndown="sudo wg-quick down nexus-JP-FREE33"
 # ===============================================
 
 alias daty='date +%Y-%m-%d'    # Simple YYYY-MM-DD format
+alias date6="TZ='Etc/GMT-6' date -d"
 alias clock='watch -n 1 date +"%T"' # Live digital clock (HH:MM:SS)
 weather() { curl "wttr.in/$1" | head -n -1; } # Weather for location
 alias top-commands="history | awk '{if (\$2 != \"\") CMD[\$2]++; count++;} END { for (a in CMD) print CMD[a], CMD[a]/count*100 \"%\", a;}' | grep -v \"./\" | column -c3 -s \" \" -t | sort -nr | nl | head -n10" # Top 10 commands
