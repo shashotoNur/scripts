@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+figlet -f slant "$(hostname)"
+echo "Welcome back, $USER."
+echo "Machine: $(cat /sys/class/dmi/id/product_name) | System: $(. /etc/os-release && echo "$PRETTY_NAME") | Session: $XDG_CURRENT_DESKTOP"
+echo "───────────────────────────────────────────────────────────────────"

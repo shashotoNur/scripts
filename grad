@@ -1,0 +1,61 @@
+#!/usr/bin/env perl
+# grad: N-stop truecolor gradient filter (stdin -> stdout)
+# usage: grad [-s SLOPE] [COLOR COLOR ...]
+use strict; use warnings;
+use Getopt::Long qw(:config no_ignore_case bundling);
+binmode STDIN,  ':encoding(UTF-8)';
+binmode STDOUT, ':encoding(UTF-8)';
+
+sub usage {
+    print STDERR <<'EOT';
+usage: grad [-s SLOPE] [COLOR COLOR ...]
+  COLOR  hex as RRGGBB, #RRGGBB, RGB or #RGB (quote it if it has a '#')
+  -s N   vertical slope; 0 = purely horizontal, default 2
+With no colors: FFBBB8 D894D0 919EC9
+EOT
+    exit shift;
+}
+
+my ($k, $help) = (2, 0);
+GetOptions('s|slope=f' => \$k, 'h|help' => \$help) or usage(2);
+usage(0) if $help;
+die "grad: slope must be >= 0\n" if $k < 0;
+
+my @args = @ARGV ? @ARGV : qw(FFBBB8 D894D0 919EC9);
+my @stops;
+for my $arg (@args) {
+    my $h = $arg;
+    $h =~ s/^#//;
+    $h =~ s/^(.)(.)(.)$/$1$1$2$2$3$3/;          # expand shorthand
+    die "grad: invalid color '$arg'\n" unless $h =~ /^[0-9A-Fa-f]{6}$/;
+    push @stops, [ map { hex } $h =~ /(..)(..)(..)/ ];
+}
+die "grad: need at least 2 colors\n" if @stops < 2;
+
+my @lines = <STDIN>;
+chomp @lines;
+my $max = 0;
+for (@lines) { $max = length if length > $max }
+my $span = $max + $k * @lines;
+$span = 1 if $span < 1;
+
+my $row = 0;
+for my $line (@lines) {
+    my ($out, $col) = ('', 0);
+    for my $ch (split //, $line) {
+        if ($ch eq ' ') { $out .= $ch; $col++; next }
+        my $t = ($col + $k * $row) / $span;
+        $t = 1 if $t > 1;
+        my $pos = $t * (@stops - 1);
+        my $i   = int $pos;
+        $i = @stops - 2 if $i > @stops - 2;
+        my $f   = $pos - $i;
+        my @c = map {
+            int($stops[$i][$_] + ($stops[$i+1][$_] - $stops[$i][$_]) * $f + 0.5)
+        } 0..2;
+        $out .= sprintf("\e[38;2;%d;%d;%dm%s", @c, $ch);
+        $col++;
+    }
+    print $out, "\e[0m\n";
+    $row++;
+}
