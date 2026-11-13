@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# pre-commit: stop commits containing files larger than GitHub's 100 MiB limit.
+# Limit precedence: $HOOK_MAX_BYTES > `git config hooks.maxBytes` > 104857600.
+
+limit=${HOOK_MAX_BYTES:-}
+[[ -n $limit ]] || limit=$(git config --get hooks.maxBytes 2>/dev/null)
+[[ $limit =~ ^[0-9]+$ ]] || limit=104857600
+
+human() { # bytes -> "123.4 MiB"
+  printf '%d.%d MiB' $(( $1 / 1048576 )) $(( ($1 % 1048576) * 10 / 1048576 ))
+}
+
+paths=()
+sizes=()
+while IFS= read -r -d '' f; do
+  size=$(git cat-file -s ":0:$f" 2>/dev/null) || continue
+  if (( size > limit )); then
+    paths+=("$f")
+    sizes+=("$size")
+  fi
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+(( ${#paths[@]} )) || exit 0
+
+{
+  printf '\npre-commit: %d staged file(s) exceed the limit of %s:\n\n' \
+    "${#paths[@]}" "$(human "$limit")"
+  for i in "${!paths[@]}"; do
+    printf '  %10s  %s\n' "$(human "${sizes[i]}")" "${paths[i]}"
+  done
+  printf '\nGitHub rejects pushes containing files over 100 MiB.\n'
+  printf 'Consider Git LFS (git lfs track) or adding the file to .gitignore.\n\n'
+} >&2
+
+# Hooks run without a usable stdin, so talk to the terminal directly.
+if ! ( : </dev/tty ) 2>/dev/null; then
+  echo "pre-commit: no terminal available for a prompt; aborting commit." >&2
+  echo "pre-commit: bypass deliberately with: git commit --no-verify" >&2
+  exit 1
+fi
+
+while true; do
+  printf '[q] quit   [u] unstage these file(s) and quit   [g] go ahead anyway\n> ' >&2
+  IFS= read -r ans </dev/tty || ans=q
+  case $ans in
+    q|Q|'')
+      echo "Commit aborted. Files remain staged." >&2
+      exit 1 ;;
+    u|U)
+      for f in "${paths[@]}"; do
+        git reset -q -- "$f" 2>/dev/null || git rm --cached -q -- "$f"
+        echo "Unstaged: $f" >&2
+      done
+      echo "Commit aborted. Files are untouched on disk." >&2
+      exit 1 ;;
+    g|G)
+      echo "Proceeding. Note: GitHub will reject the push of this file." >&2
+      exit 0 ;;
+    *)
+      echo "Please answer q, u or g." >&2 ;;
+  esac
+done

@@ -53,7 +53,7 @@ alias glo='git log --oneline --decorate'
 alias gloga='git log --oneline --decorate --graph --all'
 alias gp='git push'
 alias gra='git remote add'
-alias gst='git status --short'
+alias gss='git status --short'
 
 
 # ===============================================
@@ -117,6 +117,7 @@ gcaur () {
 # ===============================================
 
 alias scratch='$EDITOR $(mktemp)'   # Open a temporary text file
+alias gte='gnome-text-editor'	    # Short name for text editor
 alias addquote="sed -i 's/^/> /'"   # Add quote padding
 alias rmquote="sed -i 's/^> //'"    # Remove quote padding
 alias reset-nvim="rm -rf ~/.config/nvim ~/.local/share/nvim ~/.local/state/nvim ~/.cache/nvim" # Wipe NVIM configuration
