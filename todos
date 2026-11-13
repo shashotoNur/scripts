@@ -1,0 +1,811 @@
+#!/usr/bin/env bash
+# todos - interactive, nested todo list for the terminal (bash >= 4)
+# Run `todos --help` for usage.
+#
+# Data file (TSV): id  parent_id  done(0/1)  trash_batch(0=live)  text
+# Line order in the file = sibling order.
+
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "todos needs bash >= 4 (found $BASH_VERSION). macOS: brew install bash" >&2
+  exit 1
+fi
+
+VERSION="1.1.0"
+
+declare -A PAR ISDONE TR TXT SEL CNT_T CNT_D
+declare -A KEYMAP ADESC ASCOPE ADEF CUR KL
+ORDER=() LIST=() VIS=() POS=() TARGETS=() DEL=() ACTIONS=()
+NEXT_ID=1 NEXT_BATCH=1 AUTO_N=0 QUIT=0
+VIEW=main LEVEL=0 CURSOR=0 ALT_CURSOR=0 TOP=0
+MSG="" INPUT="" KEY="" ACT="" INTR=0 ROWS=24 COLS=80 BC="" PATHSTR="" ORIG_STTY="" TRIMMED=""
+HINT1_MAIN="" HINT2_MAIN="" HINT1_TRASH="" HINT2_TRASH=""
+
+# ---------------------------------------------------------------- actions table
+# action | scope (main/trash/both) | default keys | description
+ACTION_TABLE=(
+  "up|both|UP|Cursor up; with a selection, move the selected items up"
+  "down|both|DOWN|Cursor down; with a selection, move the selected items down"
+  "right|both|RIGHT|Open sub-todos; with a selection, nest items under the one above"
+  "left|both|LEFT|Back to the parent; with a selection, move items out one level"
+  "cursor_up|both|k|Cursor up (never moves items)"
+  "cursor_down|both|j|Cursor down (never moves items)"
+  "top|both|g|Jump to the first item"
+  "bottom|both|G|Jump to the last item"
+  "add|main|+ =|Add a todo at the current level"
+  "edit|main|e|Edit the todo under the cursor"
+  "toggle|main|ENTER|Toggle done/undone (selected items, or the cursor)"
+  "trash|main|-|Move to trash, together with all sub-todos"
+  "restore|trash|+ =|Restore from trash, plus any trashed parents it needs"
+  "delete|trash|-|Delete permanently (asks for confirmation)"
+  "select|both|s|Select / unselect the item under the cursor"
+  "select_all|both|a|Select all / unselect all items in this list"
+  "clear_selection|both|ESC|Clear the selection"
+  "switch_view|both|t|Switch between todos and trash"
+  "help|both|?|Show key bindings"
+  "quit|both|q|Quit"
+)
+
+init_actions() {
+  local row a sc dk ds
+  for row in "${ACTION_TABLE[@]}"; do
+    IFS='|' read -r a sc dk ds <<< "$row"
+    ACTIONS+=("$a"); ASCOPE[$a]=$sc; ADEF[$a]=$dk; ADESC[$a]=$ds; CUR[$a]=$dk
+  done
+}
+init_actions
+
+# ---------------------------------------------------------------- misc helpers
+die() { printf 'todos: %s\n' "$*" >&2; exit 2; }
+
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  TRIMMED=$s
+}
+
+valid_key() {
+  (( ${#1} == 1 )) && return 0
+  case $1 in
+    UP|DOWN|LEFT|RIGHT|ENTER|ESC|SPACE|TAB|BACKSPACE|DELETE|HOME|END) return 0 ;;
+  esac
+  return 1
+}
+
+# ---------------------------------------------------------------- key bindings
+load_config() {
+  [[ -f $CONFIG_FILE ]] || return 0
+  local line n=0 act keys k
+  local -a ks
+  while IFS= read -r line || [[ -n $line ]]; do
+    (( n++ ))
+    trim "$line"; line=$TRIMMED
+    [[ -z $line || $line == \#* ]] && continue
+    [[ $line == *=* ]] || die "$CONFIG_FILE:$n: expected 'action = key ...'"
+    trim "${line%%=*}"; act=$TRIMMED
+    keys=${line#*=}
+    [[ -n ${ASCOPE[$act]+x} ]] || die "$CONFIG_FILE:$n: unknown action '$act'"
+    ks=(); read -ra ks <<< "$keys"
+    for k in "${ks[@]}"; do
+      valid_key "$k" || die "$CONFIG_FILE:$n: invalid key '$k' (use one character or a name like ENTER)"
+    done
+    CUR[$act]="${ks[*]}"
+  done < "$CONFIG_FILE"
+}
+
+scopes_overlap() {
+  [[ ${ASCOPE[$1]} == both || ${ASCOPE[$2]} == both || ${ASCOPE[$1]} == "${ASCOPE[$2]}" ]]
+}
+
+build_keymap() {
+  KEYMAP=()
+  local a k b kk
+  local -a ks
+  for a in "${ACTIONS[@]}"; do
+    ks=(); read -ra ks <<< "${CUR[$a]}"
+    for k in "${ks[@]}"; do
+      kk="k:$k"
+      for b in ${KEYMAP[$kk]:-}; do
+        [[ $b == "$a" ]] && continue
+        if scopes_overlap "$a" "$b"; then
+          die "key '$k' is bound to both '$b' and '$a' in overlapping views"
+        fi
+      done
+      KEYMAP[$kk]+="${KEYMAP[$kk]:+ }$a"
+    done
+  done
+}
+
+build_hints() {
+  local a s sep="/"
+  for a in "${ACTIONS[@]}"; do
+    s=${CUR[$a]}; s=${s// /$sep}
+    KL[$a]=${s:-unbound}
+  done
+  HINT1_MAIN="${KL[add]} add | ${KL[trash]} trash | ${KL[edit]} edit | ${KL[toggle]} done/undone | ${KL[select]} select | ${KL[select_all]} all | ${KL[switch_view]} trash view | ${KL[help]} help | ${KL[quit]} quit"
+  HINT2_MAIN="${KL[right]} open/nest | ${KL[left]} back/outdent | ${KL[up]}/${KL[down]} move cursor, or the selected items"
+  HINT1_TRASH="${KL[restore]} restore | ${KL[delete]} delete forever | ${KL[select]} select | ${KL[select_all]} all | ${KL[switch_view]} back to todos | ${KL[help]} help | ${KL[quit]} quit"
+  HINT2_TRASH="Restoring a sub-todo also restores any trashed parents it needs"
+}
+
+print_config() {
+  local a
+  printf '# todos key bindings: "action = key [key ...]"\n'
+  printf '# Keys: one character, or UP DOWN LEFT RIGHT ENTER ESC SPACE TAB BACKSPACE DELETE HOME END\n'
+  printf '# Lines starting with # are comments. An action with no keys is unbound.\n'
+  for a in "${ACTIONS[@]}"; do
+    printf '%-16s = %s\n' "$a" "${CUR[$a]}"
+  done
+}
+
+usage() {
+  cat <<EOF
+todos $VERSION - interactive, nested todo list for the terminal
+
+Usage:
+  todos [options] [FILE]
+
+Options:
+  -f, --file FILE     Todo data file (default: \$TODOS_FILE, then ~/.todo.tsv)
+  -c, --config FILE   Key binding file (default: \$TODOS_CONFIG, then
+                      \${XDG_CONFIG_HOME:-~/.config}/todos/keys.conf)
+      --print-config  Print the effective key bindings in config format and exit
+  -h, --help          Show this help and exit
+  -V, --version       Show the version and exit
+
+Behaviour:
+  - Todos nest to any depth. Open a todo to see and add its sub-todos.
+  - Trashing keeps each todo's original parent; restoring puts it back there.
+  - A todo becomes done automatically when all of its direct children are done.
+  - Marking a parent done never changes its children.
+  - Adding a child to a done todo makes that todo undone.
+
+Default key bindings:
+EOF
+  local a
+  for a in "${ACTIONS[@]}"; do
+    printf '  %-16s %-8s %-7s %s\n' "$a" "${ADEF[$a]}" "[${ASCOPE[$a]}]" "${ADESC[$a]}"
+  done
+  cat <<'EOF'
+
+Changing key bindings:
+  Create the config file with one binding per line:
+      action = key [key ...]
+  for example:
+      quit       = q Q
+      select_all = A
+  A line replaces all default keys of that action. Lines starting with #
+  are comments. Two actions may share a key only if they act in different
+  views (main/trash). Ctrl-C always quits. Use --print-config for a template.
+EOF
+}
+
+# ---------------------------------------------------------------- arguments
+FILE_ARG="" CONFIG_ARG="" SHOW_HELP=0 SHOW_VER=0 PRINT_CFG=0
+while (( $# )); do
+  case $1 in
+    -h|--help)      SHOW_HELP=1 ;;
+    -V|--version)   SHOW_VER=1 ;;
+    --print-config) PRINT_CFG=1 ;;
+    -f|--file)      shift; (( $# )) || die "option --file needs a value"; FILE_ARG=$1 ;;
+    -c|--config)    shift; (( $# )) || die "option --config needs a value"; CONFIG_ARG=$1 ;;
+    --)             shift; (( $# )) && FILE_ARG=$1; break ;;
+    -*)             die "unknown option: $1 (try --help)" ;;
+    *)              FILE_ARG=$1 ;;
+  esac
+  shift
+done
+
+(( SHOW_HELP )) && { usage; exit 0; }
+(( SHOW_VER ))  && { echo "todos $VERSION"; exit 0; }
+
+TODO_FILE=${FILE_ARG:-${TODOS_FILE:-${TODO_FILE:-$HOME/.todo.tsv}}}
+CONFIG_FILE=${CONFIG_ARG:-${TODOS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/todos/keys.conf}}
+
+load_config
+build_keymap
+build_hints
+(( PRINT_CFG )) && { print_config; exit 0; }
+
+[[ -t 0 && -t 1 ]] || { echo "todos must run in an interactive terminal" >&2; exit 1; }
+
+# ---------------------------------------------------------------- storage
+load() {
+  local id par dn tr txt
+  [[ -f $TODO_FILE ]] || return 0
+  while IFS=$'\t' read -r id par dn tr txt || [[ -n $id ]]; do
+    [[ $id =~ ^[0-9]+$ ]] || continue
+    ORDER+=("$id")
+    PAR[$id]=$par; ISDONE[$id]=$dn; TR[$id]=$tr; TXT[$id]=$txt
+    (( id >= NEXT_ID )) && NEXT_ID=$(( id + 1 ))
+    (( tr >= NEXT_BATCH )) && NEXT_BATCH=$(( tr + 1 ))
+  done < "$TODO_FILE"
+}
+
+save() {
+  local tmp="$TODO_FILE.tmp.$$" id
+  {
+    for id in "${ORDER[@]}"; do
+      printf '%s\t%s\t%s\t%s\t%s\n' "$id" "${PAR[$id]}" "${ISDONE[$id]}" "${TR[$id]}" "${TXT[$id]}"
+    done
+  } > "$tmp" && mv "$tmp" "$TODO_FILE"
+}
+
+# ---------------------------------------------------------------- tree helpers
+mark_subtree() {   # id batch : stamp id and its still-live descendants
+  local id=$1 c
+  TR[$id]=$2
+  for c in "${ORDER[@]}"; do
+    [[ ${PAR[$c]} == "$id" && ${TR[$c]} == 0 ]] && mark_subtree "$c" "$2"
+  done
+}
+
+unmark_subtree() { # id batch : un-trash id and descendants carrying the same batch
+  local id=$1 c
+  TR[$id]=0
+  for c in "${ORDER[@]}"; do
+    [[ ${PAR[$c]} == "$id" && ${TR[$c]} == "$2" ]] && unmark_subtree "$c" "$2"
+  done
+}
+
+collect_subtree() { # id : append id and ALL descendants to DEL
+  local id=$1 c
+  DEL+=("$id")
+  for c in "${ORDER[@]}"; do
+    [[ ${PAR[$c]} == "$id" ]] && collect_subtree "$c"
+  done
+}
+
+delete_subtree() {
+  DEL=(); collect_subtree "$1"
+  local -A gone; local id; local -a new=()
+  for id in "${DEL[@]}"; do gone[$id]=1; done
+  for id in "${ORDER[@]}"; do [[ -n ${gone[$id]:-} ]] || new+=("$id"); done
+  ORDER=("${new[@]}")
+  for id in "${DEL[@]}"; do
+    unset "PAR[$id]" "ISDONE[$id]" "TR[$id]" "TXT[$id]" "SEL[$id]"
+  done
+}
+
+auto_complete() { # id : id just became done; mark ancestors done while all live direct children are done
+  local p=${PAR[$1]} c total ndone
+  while (( p != 0 )); do
+    [[ ${ISDONE[$p]} == 1 ]] && break
+    total=0; ndone=0
+    for c in "${ORDER[@]}"; do
+      if [[ ${PAR[$c]} == "$p" && ${TR[$c]} == 0 ]]; then
+        (( total++ ))
+        [[ ${ISDONE[$c]} == 1 ]] && (( ndone++ ))
+      fi
+    done
+    (( total > 0 && total == ndone )) || break
+    ISDONE[$p]=1
+    (( AUTO_N++ ))
+    p=${PAR[$p]}
+  done
+}
+
+path_of() { # id -> PATHSTR = "Grandparent > Parent" (original location)
+  local p=${PAR[$1]} out=""
+  while (( p != 0 )); do
+    if [[ -z $out ]]; then out=${TXT[$p]}; else out="${TXT[$p]} > $out"; fi
+    p=${PAR[$p]}
+  done
+  PATHSTR=$out
+}
+
+breadcrumb() {
+  local id=$LEVEL out=""
+  while (( id != 0 )); do out=" > ${TXT[$id]}$out"; id=${PAR[$id]}; done
+  BC="Home$out"
+}
+
+compute_counts() {
+  CNT_T=(); CNT_D=()
+  local id p
+  for id in "${ORDER[@]}"; do
+    [[ ${TR[$id]} == 0 ]] || continue
+    p=${PAR[$id]}
+    CNT_T[$p]=$(( ${CNT_T[$p]:-0} + 1 ))
+    [[ ${ISDONE[$id]} == 1 ]] && CNT_D[$p]=$(( ${CNT_D[$p]:-0} + 1 ))
+  done
+}
+
+# ---------------------------------------------------------------- list / cursor
+build_list() {
+  LIST=()
+  local id i p b
+  if [[ $VIEW == main ]]; then
+    for id in "${ORDER[@]}"; do
+      [[ ${TR[$id]} == 0 && ${PAR[$id]} == "$LEVEL" ]] && LIST+=("$id")
+    done
+  else
+    local -a rows=()
+    for i in "${!ORDER[@]}"; do
+      id=${ORDER[i]}; b=${TR[$id]}; p=${PAR[$id]}
+      # trash root = trashed, and its parent was not trashed in the same batch
+      if (( b > 0 )) && [[ ${TR[$p]:-0} != "$b" ]]; then rows+=("$b $i $id"); fi
+    done
+    if (( ${#rows[@]} )); then
+      while read -r _ _ id; do LIST+=("$id"); done \
+        < <(printf '%s\n' "${rows[@]}" | sort -k1,1nr -k2,2n)
+    fi
+  fi
+}
+
+clamp() {
+  local n=${#LIST[@]}
+  (( CURSOR >= n )) && CURSOR=$(( n - 1 ))
+  (( CURSOR < 0 )) && CURSOR=0
+}
+
+focus_id() {
+  local i
+  for i in "${!LIST[@]}"; do
+    if [[ ${LIST[i]} == "$1" ]]; then CURSOR=$i; return; fi
+  done
+}
+
+has_sel() { (( ${#SEL[@]} > 0 )); }
+
+get_targets() {
+  TARGETS=()
+  local id
+  for id in "${LIST[@]}"; do [[ -n ${SEL[$id]:-} ]] && TARGETS+=("$id"); done
+  if (( ${#TARGETS[@]} == 0 && ${#LIST[@]} > 0 )); then TARGETS=("${LIST[CURSOR]}"); fi
+}
+
+level_items() { # VIS = live children of LEVEL, POS = their indexes in ORDER
+  VIS=(); POS=()
+  local i id
+  for i in "${!ORDER[@]}"; do
+    id=${ORDER[i]}
+    if [[ ${TR[$id]} == 0 && ${PAR[$id]} == "$LEVEL" ]]; then VIS+=("$id"); POS+=("$i"); fi
+  done
+}
+
+# ---------------------------------------------------------------- input
+read_key() {
+  local k c seq rc
+  KEY=""
+  IFS= read -rsn1 k; rc=$?
+  if (( rc > 128 )); then KEY=SIG; return; fi
+  if (( rc != 0 )); then KEY=EOF; return; fi
+  case $k in
+    '')              KEY=ENTER ;;
+    ' ')             KEY=SPACE ;;
+    $'\t')           KEY=TAB ;;
+    $'\x7f'|$'\b')   KEY=BACKSPACE ;;
+    $'\e')
+      c=""
+      IFS= read -rsn1 -t 0.05 c
+      if [[ -z $c ]]; then
+        KEY=ESC
+      elif [[ $c == '[' ]]; then
+        seq=""
+        while IFS= read -rsn1 -t 0.05 c; do
+          seq+=$c
+          [[ $c == [A-Za-z~] ]] && break
+        done
+        case $seq in
+          1~|7~) KEY=HOME ;;
+          4~|8~) KEY=END ;;
+          3~)    KEY=DELETE ;;
+          *A)    KEY=UP ;;
+          *B)    KEY=DOWN ;;
+          *C)    KEY=RIGHT ;;
+          *D)    KEY=LEFT ;;
+          *H)    KEY=HOME ;;
+          *F)    KEY=END ;;
+          *)     KEY=OTHER ;;
+        esac
+      elif [[ $c == O ]]; then
+        c=""; IFS= read -rsn1 -t 0.05 c
+        case $c in
+          A) KEY=UP ;; B) KEY=DOWN ;; C) KEY=RIGHT ;; D) KEY=LEFT ;;
+          H) KEY=HOME ;; F) KEY=END ;; *) KEY=OTHER ;;
+        esac
+      else
+        KEY=OTHER
+      fi ;;
+    *) KEY=$k ;;
+  esac
+}
+
+resolve_action() {
+  ACT=""
+  local a k="k:$KEY"
+  for a in ${KEYMAP[$k]:-}; do
+    if [[ ${ASCOPE[$a]} == both || ${ASCOPE[$a]} == "$VIEW" ]]; then ACT=$a; break; fi
+  done
+}
+
+# ---------------------------------------------------------------- drawing
+term_size() {
+  local sz r c
+  sz=$(stty size 2>/dev/null </dev/tty) || sz=""
+  read -r r c <<< "$sz"
+  ROWS=${r:-24}; COLS=${c:-80}
+  (( ROWS > 0 )) || ROWS=24
+  (( COLS > 0 )) || COLS=80
+}
+
+draw() {
+  term_size
+  [[ $LEVEL == 0 || -n ${PAR[$LEVEL]+x} ]] || LEVEL=0
+  build_list; clamp; compute_counts
+
+  local n=${#LIST[@]} list_h=$(( ROWS - 6 )) w=$(( COLS - 1 )) nsel=${#SEL[@]}
+  (( list_h < 1 )) && list_h=1
+  (( TOP > n - list_h )) && TOP=$(( n - list_h ))
+  (( TOP < 0 )) && TOP=0
+  (( CURSOR < TOP )) && TOP=$CURSOR
+  (( CURSOR >= TOP + list_h )) && TOP=$(( CURSOR - list_h + 1 ))
+
+  local out=$'\e[H' sep
+  printf -v sep '%*s' "$COLS" ''; sep=${sep// /-}
+
+  if [[ $VIEW == main ]]; then out+=$'\e[1;7m  TODOS  \e[0m'
+  else out+=$'\e[1;41m  TRASH  \e[0m'; fi
+  out+=" $n item(s)"
+  (( nsel )) && out+="  |  $nsel selected"
+  out+=$'\e[K\n'
+
+  if [[ $VIEW == main ]]; then breadcrumb; out+="${BC:0:w}"
+  else out+="Deleted items. Restored sub-todos return to their original parent."; fi
+  out+=$'\e[K\n'
+  out+=$'\e[2m'"${sep:0:w}"$'\e[0m\e[K\n'
+
+  local i id cur mark box line style sfx t
+  for (( i = TOP; i < TOP + list_h; i++ )); do
+    if (( i >= n )); then
+      if (( n == 0 && i == TOP )); then
+        if [[ $VIEW == main ]]; then out+=$'\e[2m'"  (empty - press ${KL[add]} to add a todo here)"$'\e[0m'
+        else out+=$'\e[2m  (trash is empty)\e[0m'; fi
+      fi
+      out+=$'\e[K\n'
+      continue
+    fi
+    id=${LIST[i]}
+    cur=' ';  (( i == CURSOR )) && cur='>'
+    mark=' '; [[ -n ${SEL[$id]:-} ]] && mark='*'
+    box='[ ]'; [[ ${ISDONE[$id]} == 1 ]] && box='[x]'
+    sfx=''
+    if [[ $VIEW == main ]]; then
+      t=${CNT_T[$id]:-0}
+      (( t > 0 )) && sfx="  (${CNT_D[$id]:-0}/$t) >"
+    else
+      path_of "$id"
+      sfx="   (from: ${PATHSTR:-top level})"
+    fi
+    line="$cur $mark $box ${TXT[$id]}$sfx"
+    line=${line:0:w}
+    style=''
+    [[ ${ISDONE[$id]} == 1 ]] && style+=$'\e[2m'
+    [[ -n ${SEL[$id]:-} ]] && style+=$'\e[33m'
+    (( i == CURSOR )) && style+=$'\e[7m'
+    out+="$style$line"$'\e[K\e[0m\n'
+  done
+
+  local h1 h2
+  if [[ $VIEW == main ]]; then h1=$HINT1_MAIN; h2=$HINT2_MAIN
+  else h1=$HINT1_TRASH; h2=$HINT2_TRASH; fi
+  out+=$'\e[33m'"${MSG:0:w}"$'\e[0m\e[K\n'
+  out+=$'\e[2m'"${h1:0:w}"$'\e[0m\e[K\n'
+  out+=$'\e[2m'"${h2:0:w}"$'\e[0m\e[K'
+  out+=$'\e[J'
+  printf '%s' "$out"
+}
+
+show_help() {
+  term_size
+  local -a L=()
+  local a line i=0 j n per page=1 pages
+  L+=("todos $VERSION - key bindings (config: $CONFIG_FILE)" "")
+  for a in "${ACTIONS[@]}"; do
+    printf -v line '%-16s %-10s %-7s %s' "$a" "${KL[$a]}" "[${ASCOPE[$a]}]" "${ADESC[$a]}"
+    L+=("$line")
+  done
+  L+=("" "Done rules:"
+      "  A parent becomes done when all of its direct children are done."
+      "  Marking a parent done never changes its children."
+      "  Adding a child to a done todo makes that todo undone.")
+  n=${#L[@]}; per=$(( ROWS - 2 )); (( per < 1 )) && per=1
+  pages=$(( (n + per - 1) / per ))
+  while (( i < n )); do
+    printf '\e[H\e[2J'
+    for (( j = i; j < i + per && j < n; j++ )); do
+      printf '%s\e[K\n' "${L[j]:0:$(( COLS - 1 ))}"
+    done
+    printf '\e[%d;1H\e[7m page %d/%d - any key: next, Esc or q: close \e[0m' "$ROWS" "$page" "$pages"
+    read_key
+    case $KEY in ESC|q|SIG|EOF) break ;; esac
+    i=$(( i + per )); (( page++ ))
+  done
+  printf '\e[H\e[2J'
+}
+
+# ---------------------------------------------------------------- prompts
+prompt() { # label initial -> INPUT ; returns 1 on cancel or empty input
+  local label=$1 buf=$2 pos off=0 avail row ch
+  pos=${#buf}
+  INTR=0
+  printf '\e[?25h'
+  while true; do
+    term_size
+    row=$(( ROWS - 2 ))
+    avail=$(( COLS - ${#label} - 1 )); (( avail < 1 )) && avail=1
+    (( pos < off )) && off=$pos
+    (( pos > off + avail - 1 )) && off=$(( pos - avail + 1 ))
+    printf '\e[%d;1H\e[2K\e[1;36m%s\e[0m%s\e[%d;%dH' \
+      "$row" "$label" "${buf:off:avail}" "$row" "$(( ${#label} + pos - off + 1 ))"
+    read_key
+    if (( INTR )); then INTR=0; printf '\e[?25l'; return 1; fi
+    ch=""
+    case $KEY in
+      SIG)       continue ;;
+      EOF|ESC)   printf '\e[?25l'; return 1 ;;
+      ENTER)     break ;;
+      LEFT)      (( pos > 0 )) && (( pos-- )) ;;
+      RIGHT)     (( pos < ${#buf} )) && (( pos++ )) ;;
+      HOME)      pos=0 ;;
+      END)       pos=${#buf} ;;
+      BACKSPACE) if (( pos > 0 )); then buf=${buf:0:pos-1}${buf:pos}; (( pos-- )); fi ;;
+      DELETE)    buf=${buf:0:pos}${buf:pos+1} ;;
+      SPACE)     ch=" " ;;
+      *)         if (( ${#KEY} == 1 )) && [[ $KEY != [[:cntrl:]] ]]; then ch=$KEY; fi ;;
+    esac
+    if [[ -n $ch ]]; then buf=${buf:0:pos}$ch${buf:pos}; (( pos++ )); fi
+  done
+  printf '\e[?25l'
+  trim "$buf"; INPUT=$TRIMMED
+  [[ -n $INPUT ]]
+}
+
+confirm() {
+  term_size
+  printf '\e[%d;1H\e[2K\e[33m%s\e[0m' "$(( ROWS - 2 ))" "$1"
+  read_key
+  INTR=0
+  [[ $KEY == [yY] ]]
+}
+
+# ---------------------------------------------------------------- actions
+act_add() {
+  prompt "New todo: " "" || { MSG="Cancelled"; return; }
+  local id=$NEXT_ID
+  (( NEXT_ID++ ))
+  ORDER+=("$id")
+  PAR[$id]=$LEVEL; ISDONE[$id]=0; TR[$id]=0; TXT[$id]=$INPUT
+  MSG="Added"
+  if (( LEVEL != 0 )) && [[ ${ISDONE[$LEVEL]} == 1 ]]; then
+    ISDONE[$LEVEL]=0
+    MSG="Added; '${TXT[$LEVEL]}' is now undone"
+  fi
+  save
+  build_list; focus_id "$id"
+}
+
+act_edit() {
+  (( ${#LIST[@]} )) || return
+  local id=${LIST[CURSOR]}
+  prompt "Edit: " "${TXT[$id]}" || { MSG="Edit cancelled"; return; }
+  TXT[$id]=$INPUT
+  save
+  MSG="Updated"
+}
+
+act_toggle() {
+  get_targets
+  (( ${#TARGETS[@]} )) || return
+  local first=${TARGETS[0]} id new
+  new=$(( 1 - ${ISDONE[$first]} ))
+  for id in "${TARGETS[@]}"; do ISDONE[$id]=$new; done
+  AUTO_N=0
+  if (( new == 1 )); then
+    for id in "${TARGETS[@]}"; do auto_complete "$id"; done
+  fi
+  save
+  (( AUTO_N > 0 )) && MSG="Auto-completed $AUTO_N parent todo(s)"
+}
+
+act_trash() {
+  get_targets
+  (( ${#TARGETS[@]} )) || return
+  local id b=$NEXT_BATCH
+  (( NEXT_BATCH++ ))
+  for id in "${TARGETS[@]}"; do mark_subtree "$id" "$b"; done
+  SEL=()
+  save
+  MSG="Moved ${#TARGETS[@]} item(s) to trash (${KL[switch_view]} to view)"
+}
+
+act_restore() {
+  get_targets
+  (( ${#TARGETS[@]} )) || return
+  local id p i count=0 anc=0
+  local -a batches=()
+  for id in "${TARGETS[@]}"; do batches+=("${TR[$id]}"); done
+  for i in "${!TARGETS[@]}"; do
+    id=${TARGETS[i]}
+    p=${PAR[$id]}
+    while (( p != 0 )) && [[ ${TR[$p]} -gt 0 ]]; do   # bring back needed ancestors
+      TR[$p]=0; (( anc++ )); p=${PAR[$p]}
+    done
+    unmark_subtree "$id" "${batches[i]}"
+    (( count++ ))
+  done
+  SEL=()
+  save
+  MSG="Restored $count item(s)"
+  (( anc > 0 )) && MSG+=" and $anc trashed parent(s)"
+}
+
+act_delete() {
+  get_targets
+  (( ${#TARGETS[@]} )) || return
+  if ! confirm "Permanently delete ${#TARGETS[@]} item(s) and all their sub-todos? (y/N) "; then
+    MSG="Cancelled"; return
+  fi
+  local id
+  for id in "${TARGETS[@]}"; do
+    [[ -n ${PAR[$id]+x} ]] && delete_subtree "$id"
+  done
+  SEL=()
+  save
+  MSG="Deleted permanently"
+}
+
+act_select() {
+  (( ${#LIST[@]} )) || return
+  local id=${LIST[CURSOR]}
+  if [[ -n ${SEL[$id]:-} ]]; then unset "SEL[$id]"; else SEL[$id]=1; fi
+}
+
+act_select_all() {
+  local id all=1
+  for id in "${LIST[@]}"; do [[ -n ${SEL[$id]:-} ]] || all=0; done
+  SEL=()
+  (( all )) || for id in "${LIST[@]}"; do SEL[$id]=1; done
+}
+
+act_enter() {
+  (( ${#LIST[@]} )) || return
+  LEVEL=${LIST[CURSOR]}; CURSOR=0; TOP=0
+}
+
+act_back() {
+  (( LEVEL != 0 )) || return
+  local old=$LEVEL
+  LEVEL=${PAR[$old]}
+  build_list; focus_id "$old"
+}
+
+act_move() { # -1 = up, +1 = down : reorder selected items among siblings
+  level_items
+  local n=${#VIS[@]} i tmp moved=0 cid=""
+  (( ${#LIST[@]} )) && cid=${LIST[CURSOR]}
+  if (( $1 < 0 )); then
+    for (( i = 1; i < n; i++ )); do
+      if [[ -n ${SEL[${VIS[i]}]:-} && -z ${SEL[${VIS[i-1]}]:-} ]]; then
+        tmp=${VIS[i-1]}; VIS[i-1]=${VIS[i]}; VIS[i]=$tmp; moved=1
+      fi
+    done
+  else
+    for (( i = n - 2; i >= 0; i-- )); do
+      if [[ -n ${SEL[${VIS[i]}]:-} && -z ${SEL[${VIS[i+1]}]:-} ]]; then
+        tmp=${VIS[i+1]}; VIS[i+1]=${VIS[i]}; VIS[i]=$tmp; moved=1
+      fi
+    done
+  fi
+  (( moved )) || return
+  for i in "${!POS[@]}"; do ORDER[POS[i]]=${VIS[i]}; done
+  save
+  build_list; [[ -n $cid ]] && focus_id "$cid"
+}
+
+act_indent() { # with selection: nest under the item just above
+  level_items
+  local i id first=-1 target
+  for i in "${!VIS[@]}"; do
+    if [[ -n ${SEL[${VIS[i]}]:-} ]]; then first=$i; break; fi
+  done
+  (( first > 0 )) || { MSG="Nothing above to nest under"; return; }
+  target=${VIS[first-1]}
+  local -a moved=() new=()
+  local -A mv
+  for id in "${VIS[@]}"; do [[ -n ${SEL[$id]:-} ]] && { moved+=("$id"); mv[$id]=1; }; done
+  for id in "${ORDER[@]}"; do [[ -n ${mv[$id]:-} ]] || new+=("$id"); done
+  ORDER=("${new[@]}" "${moved[@]}")
+  for id in "${moved[@]}"; do PAR[$id]=$target; done
+  LEVEL=$target
+  save
+  build_list; focus_id "${moved[0]}"
+  MSG="Nested under: ${TXT[$target]}"
+}
+
+act_outdent() { # with selection: become siblings right after the parent
+  (( LEVEL != 0 )) || { MSG="Already at the top level"; return; }
+  level_items
+  local id parent=$LEVEL newp=${PAR[$LEVEL]}
+  local -a moved=() new=()
+  local -A mv
+  for id in "${VIS[@]}"; do [[ -n ${SEL[$id]:-} ]] && { moved+=("$id"); mv[$id]=1; }; done
+  (( ${#moved[@]} )) || return
+  for id in "${ORDER[@]}"; do
+    [[ -n ${mv[$id]:-} ]] && continue
+    new+=("$id")
+    [[ $id == "$parent" ]] && new+=("${moved[@]}")
+  done
+  ORDER=("${new[@]}")
+  for id in "${moved[@]}"; do PAR[$id]=$newp; done
+  LEVEL=$newp
+  save
+  build_list; focus_id "${moved[0]}"
+  MSG="Moved out one level"
+}
+
+act_switch_view() {
+  SEL=()
+  local tmp=$CURSOR
+  CURSOR=$ALT_CURSOR; ALT_CURSOR=$tmp; TOP=0
+  if [[ $VIEW == main ]]; then VIEW=trash; else VIEW=main; fi
+}
+
+run_action() {
+  case $1 in
+    quit)            QUIT=1 ;;
+    up)              if [[ $VIEW == main ]] && has_sel; then act_move -1; else CURSOR=$(( CURSOR - 1 )); fi ;;
+    down)            if [[ $VIEW == main ]] && has_sel; then act_move 1;  else CURSOR=$(( CURSOR + 1 )); fi ;;
+    right)           if [[ $VIEW == main ]]; then if has_sel; then act_indent; else act_enter; fi; fi ;;
+    left)            if [[ $VIEW == main ]]; then if has_sel; then act_outdent; else act_back; fi; fi ;;
+    cursor_up)       CURSOR=$(( CURSOR - 1 )) ;;
+    cursor_down)     CURSOR=$(( CURSOR + 1 )) ;;
+    top)             CURSOR=0 ;;
+    bottom)          CURSOR=$(( ${#LIST[@]} - 1 )) ;;
+    add)             act_add ;;
+    edit)            act_edit ;;
+    toggle)          act_toggle ;;
+    trash)           act_trash ;;
+    restore)         act_restore ;;
+    delete)          act_delete ;;
+    select)          act_select ;;
+    select_all)      act_select_all ;;
+    clear_selection) SEL=() ;;
+    switch_view)     act_switch_view ;;
+    help)            show_help ;;
+  esac
+}
+
+# ---------------------------------------------------------------- main
+cleanup() {
+  printf '\e[?25h\e[?1049l'
+  [[ -n $ORIG_STTY ]] && stty "$ORIG_STTY" 2>/dev/null
+}
+on_int() { INTR=1; }
+
+main() {
+  load
+  ORIG_STTY=$(stty -g)
+  trap cleanup EXIT
+  trap on_int INT
+  trap 'exit 1' HUP TERM
+  trap : WINCH
+  stty -echo
+  printf '\e[?1049h\e[2J\e[?25l'
+
+  while true; do
+    (( INTR )) && break
+    draw
+    read_key
+    (( INTR )) && break
+    [[ $KEY == SIG ]] && continue
+    [[ $KEY == EOF ]] && break
+    MSG=""
+    resolve_action
+    [[ -n $ACT ]] && run_action "$ACT"
+    (( QUIT )) && break
+  done
+}
+
+main
