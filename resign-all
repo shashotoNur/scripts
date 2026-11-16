@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# resign-all.sh - re-sign every commit not signed by the current key,
+# across all local branches and origin/* branches, preserving all dates.
+# Supports gpg.format = openpgp (default) and ssh.
+set -euo pipefail
+
+REMOTE=origin
+
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+info() { printf '==> %s\n' "$*"; }
+
+# ---------- preflight ----------
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git repository"
+cd "$(git rev-parse --show-toplevel)"
+[[ -z "$(git status --porcelain)" ]] || die "working tree is dirty; commit or stash first"
+git remote get-url "$REMOTE" >/dev/null 2>&1 || die "remote '$REMOTE' not found"
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+fmt=$(git config --get gpg.format || echo openpgp)
+GITC=()          # extra "git -c" options used only for verification
+case "$fmt" in
+  openpgp)
+    command -v gpg >/dev/null || die "gpg not found"
+    GPG_TTY=$(tty 2>/dev/null || true); export GPG_TTY
+
+    key=$(git config --get user.signingkey || git config --get user.email || true)
+    [[ -n "$key" ]] || die "set user.signingkey (or user.email) first"
+    key=${key%!}
+    gpg --batch --list-secret-keys "$key" >/dev/null 2>&1 || die "no secret key found for '$key'"
+
+    # primary-key fingerprint (first fpr record is the primary key)
+    want=$(gpg --batch --with-colons --fingerprint --list-keys "$key" 2>/dev/null \
+           | awk -F: '!f && $1=="fpr" {print toupper($10); f=1}')
+    [[ -n "$want" ]] || die "could not determine fingerprint for '$key'"
+    SIGFIELD='%GP'; GOODRE='^(G|U)$'; CI=1
+    ;;
+  ssh)
+    command -v ssh-keygen >/dev/null || die "ssh-keygen not found"
+    sk=$(git config --get user.signingkey || true)
+    [[ -n "$sk" ]] || die "set user.signingkey (path to your .pub file, or key::ssh-...)"
+    case "$sk" in
+      key::*) pub=${sk#key::} ;;
+      ssh-*|sk-ssh-*|ecdsa-*|sk-ecdsa-*) pub=$sk ;;
+      *)
+        f=${sk/#\~/$HOME}
+        [[ -f "$f" ]] || die "signing key file '$f' not found"
+        if [[ -f "$f.pub" ]]; then pub=$(<"$f.pub"); else pub=$(head -n1 "$f"); fi
+        ;;
+    esac
+    printf '%s\n' "$pub" > "$tmp/key.pub"
+    want=$(ssh-keygen -lf "$tmp/key.pub" 2>/dev/null | awk '{print $2}')
+    [[ "$want" == SHA256:* ]] || die "could not read a public key from user.signingkey"
+    # allowed-signers file containing only the current key, so git can report 'G'
+    awk '{print "* " $1 " " $2}' "$tmp/key.pub" > "$tmp/allowed_signers"
+    GITC=(-c "gpg.ssh.allowedSignersFile=$tmp/allowed_signers")
+    SIGFIELD='%GK'; GOODRE='^G$'; CI=0
+    ;;
+  *) die "gpg.format=$fmt is not supported (use openpgp or ssh)" ;;
+esac
+info "signature format: $fmt, key: $want"
+
+# ---------- collect refs ----------
+info "fetching $REMOTE"
+git fetch --prune "$REMOTE"
+
+mapfile -t refs < <(git for-each-ref --format='%(refname)' refs/heads "refs/remotes/$REMOTE" \
+                    | grep -v "^refs/remotes/$REMOTE/HEAD$" || true)
+(( ${#refs[@]} > 0 )) || die "no branches found"
+
+declare -A old_remote_tip
+while read -r name sha; do
+  [[ "$name" == HEAD ]] && continue
+  old_remote_tip[$name]=$sha
+done < <(git for-each-ref --format='%(refname:lstrip=3) %(objectname)' "refs/remotes/$REMOTE")
+
+mapfile -t old_shas < <(git for-each-ref --format='%(objectname)' "${refs[@]}" | sort -u)
+
+# ---------- helpers ----------
+not_signed_by_key() {
+  git ${GITC[@]+"${GITC[@]}"} log --format="%H %G? $SIGFIELD" "$@" -- |
+    awk -v want="$want" -v good="$GOODRE" -v ci="$CI" '
+      { v = $3; if (ci) v = toupper(v) }
+      !($2 ~ good && v == want) { print $1 }'
+}
+
+history_fingerprint() {
+  git log --date=raw --format='%T|%an <%ae>|%ad|%cn <%ce>|%cd|%s' "$@" -- | sort
+}
+
+# ---------- decide what to re-sign ----------
+info "scanning signatures (this can take a while)"
+not_signed_by_key "${refs[@]}" > "$tmp/bad"
+if [[ ! -s "$tmp/bad" ]]; then
+  info "all commits are already signed by the current key; nothing to do"
+  exit 0
+fi
+info "$(wc -l < "$tmp/bad") commit(s) not signed by the current key"
+
+# bad commits + all their descendants (parents precede children with --reverse --topo-order)
+git rev-list --topo-order --reverse --parents "${refs[@]}" -- |
+  awk 'NR==FNR {bad[$1]=1; next}
+       { r = ($1 in bad)
+         for (i = 2; i <= NF; i++) if ($i in set) r = 1
+         if (r) { set[$1] = 1; print $1 } }' "$tmp/bad" - > "$tmp/resign"
+info "$(wc -l < "$tmp/resign") commit(s) will be re-created and signed"
+
+# ---------- rewrite ----------
+export RESIGN_LIST="$tmp/resign"
+FILTER='
+if grep -qxF "$GIT_COMMIT" "$RESIGN_LIST"; then
+    git commit-tree -S "$@"
+else
+    cat >/dev/null
+    printf "%s\n" "$GIT_COMMIT"
+fi'
+
+info "rewriting history"
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --commit-filter "$FILTER" -- "${refs[@]}"
+
+# ---------- verify ----------
+info "verifying dates and content"
+diff <(history_fingerprint "${old_shas[@]}") <(history_fingerprint "${refs[@]}") >/dev/null \
+  || die "verification failed: tree/author/committer/date/subject mismatch (nothing pushed; originals in refs/original)"
+
+info "verifying signatures"
+still_bad=$(not_signed_by_key "${refs[@]}" | wc -l)
+(( still_bad == 0 )) || die "verification failed: $still_bad commit(s) not signed by the current key (nothing pushed)"
+info "verification passed"
+
+# ---------- push ----------
+leases=(); specs=()
+for name in "${!old_remote_tip[@]}"; do
+  new=$(git rev-parse "refs/remotes/$REMOTE/$name")
+  [[ "$new" == "${old_remote_tip[$name]}" ]] && continue
+  leases+=("--force-with-lease=refs/heads/$name:${old_remote_tip[$name]}")
+  specs+=("$new:refs/heads/$name")
+done
+
+if (( ${#specs[@]} == 0 )); then
+  info "no remote branch changed; nothing to push"
+else
+  info "pushing ${#specs[@]} branch(es) atomically"
+  git push --atomic "${leases[@]}" "$REMOTE" "${specs[@]}"
+fi
+
+# ---------- cleanup ----------
+git for-each-ref --format='%(refname)' refs/original | while read -r r; do git update-ref -d "$r"; done
+info "done"
