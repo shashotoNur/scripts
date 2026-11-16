@@ -4,6 +4,7 @@
 
 # Navigation
 alias cl='clear'
+alias cls='cl && opening_msg | grad FFBBB8 D894D0 919EC9'
 alias rs='reset'
 alias cale='cal -3'
 alias grep='rg'                # Use ripgrep (rg) as default grep
@@ -85,6 +86,13 @@ alias cpb=wl-copy              # Copy to clipboard (requires wl-clipboard)
 alias 0x0="curl -F 'file=@-' 0x0.st" # Upload pipe data to 0x0.st
 alias fastfetch='fastfetch --logo-type kitty'
 alias rn='f(){ n=$1; shift; for i in $(seq 1 $n); do "$@"; done; unset f; }; f'
+cointoss() {
+  local n=${1:-1}
+  for ((i = 0; i < n; i++)); do
+    (( RANDOM % 2 )) && echo "Tails" || echo "Heads"
+  done
+}
+
 
 # ===============================================
 # 5. PACMAN/AUR & ARCHLINUX
